@@ -3,7 +3,15 @@ import streamlit as st
 
 CUSTOM_CSS_LOGGED_IN = """
 <style>
-/* 侧边栏深色背景 */
+/* ===== 主区域宽度（默认780px太窄，放宽到几乎占满）===== */
+.main .block-container {
+    max-width: 1400px;
+    padding-top: 1.5rem;
+    padding-left: 2rem;
+    padding-right: 2rem;
+}
+
+/* ===== 侧边栏深色背景 + 白字 ===== */
 section[data-testid="stSidebar"] {
     background-color: #1e293b !important;
 }
@@ -11,14 +19,71 @@ section[data-testid="stSidebar"],
 section[data-testid="stSidebar"] * {
     color: #ffffff !important;
 }
-/* 美化页面标题 */
-h1, h2, h3 {
-    color: #0f172a;
+
+/* ===== 侧边栏按钮（解决退出登录看不见的问题）===== */
+section[data-testid="stSidebar"] .stButton > button {
+    background-color: rgba(255,255,255,0.1) !important;
+    border: 1px solid rgba(255,255,255,0.3) !important;
+    color: #ffffff !important;
+    font-weight: 500 !important;
 }
-/* 卡片悬停效果 */
+section[data-testid="stSidebar"] .stButton > button:hover {
+    background-color: rgba(220,38,38,0.85) !important;
+    border-color: rgba(220,38,38,1) !important;
+}
+
+/* ===== 页面级标题（page_header 用 st.title）===== */
+.main h1 {
+    color: #0f172a !important;
+    font-size: 1.7rem !important;
+    font-weight: 700;
+}
+
+/* ===== 主区域内 Markdown 输出的标题缩小（避免AI输出h1过大）===== */
+.main .stMarkdown h1 {
+    font-size: 1.25rem !important;
+    font-weight: 700;
+    margin: 0.6rem 0 0.4rem 0 !important;
+    color: #0f172a !important;
+}
+.main .stMarkdown h2 {
+    font-size: 1.1rem !important;
+    font-weight: 600;
+    margin: 0.5rem 0 0.3rem 0 !important;
+    color: #1e293b !important;
+}
+.main .stMarkdown h3 {
+    font-size: 1.0rem !important;
+    font-weight: 600;
+    margin: 0.4rem 0 0.2rem 0 !important;
+    color: #334155 !important;
+}
+.main .stMarkdown h4, .main .stMarkdown h5 {
+    font-size: 0.95rem !important;
+    font-weight: 600;
+    margin: 0.3rem 0 0.2rem 0 !important;
+}
+.main .stMarkdown p, .main .stMarkdown li {
+    font-size: 0.92rem;
+    line-height: 1.6;
+}
+
+/* ===== 长文滚动容器（用 .scroll-box 类标记的元素）===== */
+.scroll-box {
+    max-height: 540px;
+    overflow-y: auto;
+    padding-right: 0.5rem;
+}
+
+/* ===== 卡片悬停 ===== */
 [data-testid="stContainer"]:hover {
     box-shadow: 0 4px 12px rgba(0,0,0,0.06);
 }
+
+/* ===== 聊天消息内的 markdown 也限制字号 ===== */
+[data-testid="stChatMessage"] .stMarkdown h1 { font-size: 1.2rem !important; }
+[data-testid="stChatMessage"] .stMarkdown h2 { font-size: 1.05rem !important; }
+[data-testid="stChatMessage"] .stMarkdown h3 { font-size: 1.0rem !important; }
 </style>
 """
 
@@ -55,6 +120,18 @@ def page_header(title: str, subtitle: str = ""):
     if subtitle:
         st.caption(subtitle)
     st.divider()
+
+
+def scroll_container_open(max_height: int = 540):
+    """开启一个带滚动条的容器（搭配 scroll_container_close 使用）"""
+    st.markdown(
+        f'<div class="scroll-box" style="max-height:{max_height}px;">',
+        unsafe_allow_html=True,
+    )
+
+
+def scroll_container_close():
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 def sidebar_branding():

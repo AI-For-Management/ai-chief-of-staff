@@ -2,6 +2,7 @@
 fastapi>=0.115
 uvicorn[standard]>=0.34
 pydantic-settings>=2.9
+python-multipart>=0.0.9
 
 # Database
 sqlalchemy[asyncio]>=2.0.40

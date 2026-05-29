@@ -71,7 +71,7 @@ if user_input:
                         "message": user_input,
                         "thread_id": thread_id,
                     },
-                    timeout=120,
+                    timeout=300,
                 )
                 data = resp.json()
                 reply = data.get("reply", "(无回复)")

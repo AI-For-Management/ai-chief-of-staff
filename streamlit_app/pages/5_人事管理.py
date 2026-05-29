@@ -137,30 +137,25 @@ with tab_employees:
                                     st.markdown(f"- {s.get('name')} (等级 {s.get('level')})：{s.get('evidence', '')}")
                             st.caption(f"图谱更新于: {profile.get('last_updated', '未知')}")
 
-                        # 触发图谱生成
-                        with st.expander("生成/更新图谱", expanded=False):
-                            resume_text = st.text_area(
-                                "粘贴简历或附加描述（可选）",
-                                key=f"resume_{emp['id']}",
-                                height=150,
-                                help="如填写，AI会综合简历+项目+任务指标生成画像。否则仅基于已有数据。",
-                            )
-                            if st.button("生成图谱", key=f"gen_profile_{emp['id']}",
-                                          help="约30-60秒，调用强模型综合分析"):
-                                with st.spinner("AI正在分析多维画像..."):
-                                    try:
-                                        r = requests.post(
-                                            f"{API_BASE}/api/hr/employees/{emp['id']}/profile/generate",
-                                            json={"resume_text": resume_text},
-                                            timeout=120,
-                                        )
-                                        if r.status_code == 200:
-                                            st.success("图谱已生成")
-                                            st.rerun()
-                                        else:
-                                            st.error(f"生成失败：{r.text}")
-                                    except Exception as e:
-                                        st.error(f"生成失败：{e}")
+                        # 触发图谱生成（数据自动从知识库检索，不需手动粘简历）
+                        c1, c2 = st.columns([3, 1])
+                        c1.caption("提示：员工简历请在「知识库」页上传（doc_token 用 `resume-工号`），生成图谱时会自动关联")
+                        if c2.button("更新图谱", key=f"gen_profile_{emp['id']}",
+                                      help="基于：基本信息+技能+项目参与+月度指标+知识库自动检索的相关文档"):
+                            with st.spinner("AI正在分析多维画像（约30-60秒）..."):
+                                try:
+                                    r = requests.post(
+                                        f"{API_BASE}/api/hr/employees/{emp['id']}/profile/generate",
+                                        json={"resume_text": ""},
+                                        timeout=300,
+                                    )
+                                    if r.status_code == 200:
+                                        st.success("图谱已生成")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"生成失败：{r.text}")
+                                except Exception as e:
+                                    st.error(f"生成失败：{e}")
                     except Exception:
                         st.caption("加载详细信息失败")
 

@@ -146,24 +146,79 @@ async def execute_dispatch(state: TaskState) -> dict:
         except Exception as e:
             logger.error(f"写入Bitable失败: {e}")
 
-    # 创建飞书任务
+    # 创建飞书任务（带定点派发）
+    # 1. 先建立姓名 → 飞书 open_id 的映射表
+    name_to_openid = {}
+    name_to_dept = {}
+    try:
+        from sqlalchemy import select
+        from app.database import async_session
+        from app.models import Employee
+        async with async_session() as session:
+            r = await session.execute(select(Employee).where(Employee.is_active == True))
+            for emp in r.scalars().all():
+                if emp.feishu_open_id:
+                    name_to_openid[emp.name] = emp.feishu_open_id
+                name_to_dept[emp.name] = emp.department
+    except Exception as e:
+        logger.warning(f"加载员工映射失败: {e}")
+
+    # 2. 逐个创建+派发
+    unassigned_count = 0
     try:
         from app.services.feishu.tasks import create_task
         for t in tasks:
-            result = await create_task(
-                summary=t.get("name", "未命名任务"),
-                description=f"优先级: {t.get('priority', '-')}\n负责人: {t.get('assignee', '待分配')}",
-            )
-            task_id = result.get("task", {}).get("id", "")
-            if task_id:
-                created_ids.append(task_id)
+            try:
+                # 解析 assignee：可能是"陈思琪"、"陈思琪/产品经理" 等
+                assignee_raw = t.get("assignee", "") or ""
+                # 在映射表中查找姓名
+                matched_name = None
+                for emp_name in name_to_openid:
+                    if emp_name in assignee_raw:
+                        matched_name = emp_name
+                        break
+
+                assignee_ids = []
+                if matched_name:
+                    assignee_ids = [name_to_openid[matched_name]]
+                else:
+                    unassigned_count += 1
+                    logger.info(f"任务 [{t.get('name','?')}] 无法匹配员工 '{assignee_raw}' 到 open_id，未派发")
+
+                result = await create_task(
+                    summary=t.get("name", "未命名任务"),
+                    description=(
+                        f"优先级: {t.get('priority', '-')}\n"
+                        f"负责人: {assignee_raw or '待分配'}\n"
+                        f"截止: {t.get('deadline', '-')}\n"
+                        f"前置依赖: {', '.join(t.get('dependencies', [])) or '无'}"
+                    ),
+                    assignee_ids=assignee_ids,
+                )
+                task_obj = result.get("task", {}) if isinstance(result, dict) else {}
+                tid = task_obj.get("guid") or task_obj.get("task_id") or task_obj.get("id", "")
+                if tid:
+                    created_ids.append(tid)
+                    logger.info(
+                        f"飞书任务已创建: {t.get('name','?')} -> {tid[:12]} "
+                        f"(派发给: {matched_name or '未派发'})"
+                    )
+                else:
+                    logger.warning(f"飞书任务返回无guid/task_id: name={t.get('name')}, result={result}")
+            except Exception as inner:
+                logger.error(f"创建单个任务失败 [{t.get('name','?')}]: {inner}")
     except Exception as e:
         logger.error(f"创建飞书任务失败: {e}")
+
+    assigned_count = len(created_ids) - unassigned_count
+    msg = f"已派发 {len(tasks)} 个任务。飞书任务: {len(created_ids)} 个已创建（{assigned_count} 个已指派给具体员工，{unassigned_count} 个未派发）。"
+    if unassigned_count > 0:
+        msg += "\n\n⚠️ 未派发的任务说明AI拆解的负责人无法在员工库中匹配，或员工没有飞书 Open ID。请到「人事管理」补全员工的 Feishu Open ID。"
 
     return {
         "created_task_ids": created_ids,
         "approval_status": "approved",
-        "result": f"已派发 {len(tasks)} 个任务。飞书任务: {len(created_ids)}个已创建。",
+        "result": msg,
     }
 
 

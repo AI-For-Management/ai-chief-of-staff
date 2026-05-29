@@ -21,18 +21,63 @@ def update_employee_metrics():
         return {"error": str(e)}
 
 
+async def _load_all_bitable_records() -> list:
+    """一次性拉取所有已绑定 bitable 的全部记录（避免N+1查询）"""
+    from sqlalchemy import select
+    from app.database import async_session
+    from app.models import LarkAsset
+    from app.services.feishu.bitable import list_records
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(LarkAsset).where(
+                LarkAsset.asset_type == "bitable",
+                LarkAsset.is_active == True,
+            )
+        )
+        assets = result.scalars().all()
+
+    all_records = []
+    for asset in assets:
+        try:
+            data = await list_records(asset.asset_token, asset.table_id)
+            items = data.get("items", [])
+            all_records.extend(items)
+            logger.info(f"Bitable {asset.asset_name}: 拉取 {len(items)} 条记录")
+        except Exception as e:
+            logger.warning(f"拉取 Bitable {asset.asset_name} 失败: {e}")
+
+    return all_records
+
+
+def _aggregate_employee_tasks(employee_name: str, records: list) -> dict:
+    """从内存中的全部记录里筛出某员工的任务统计"""
+    completed = 0
+    assigned = 0
+    for item in records:
+        fields = item.get("fields", {})
+        assignee = str(fields.get("负责人", fields.get("assignee", "")))
+        if employee_name in assignee:
+            assigned += 1
+            status = str(fields.get("状态", fields.get("status", ""))).lower()
+            if status in ("done", "完成", "已完成"):
+                completed += 1
+    quality = 75.0 + (completed * 2)
+    return {"completed": completed, "assigned": assigned, "quality": quality}
+
+
 async def _compute_metrics() -> dict:
-    """计算所有员工的指标"""
+    """计算所有员工的指标（优化版：只拉一次 Bitable，且按周期 upsert 去重）"""
     from sqlalchemy import select
     from app.database import async_session
     from app.models.employee import Employee, EmployeeMetrics
 
     today = datetime.now().strftime("%Y-%m-%d")
-    week = datetime.now().strftime("%Y-W%W")
-    month = datetime.now().strftime("%Y-%m")
-    year = datetime.now().strftime("%Y")
 
     stats = {"updated": 0, "kb_saved": 0}
+
+    # 一次性拉取所有 Bitable 记录
+    all_records = await _load_all_bitable_records()
 
     async with async_session() as session:
         result = await session.execute(select(Employee).where(Employee.is_active == True))
@@ -40,32 +85,46 @@ async def _compute_metrics() -> dict:
 
         emp_summaries = []
         for emp in employees:
-            # 从Bitable获取任务完成数据
-            task_data = await _get_employee_task_data(emp)
+            task_data = _aggregate_employee_tasks(emp.name, all_records)
 
-            # 计算各项指标
-            tasks_completed = task_data.get("completed", 0)
-            tasks_assigned = task_data.get("assigned", 0)
+            tasks_completed = task_data["completed"]
+            tasks_assigned = task_data["assigned"]
             completion_rate = tasks_completed / max(tasks_assigned, 1)
             contribution = _calculate_contribution(tasks_completed, completion_rate, task_data)
             workload = min(100, tasks_assigned * 10)
-            quality = task_data.get("quality", 75.0)
+            quality = task_data["quality"]
 
-            # 写入日指标
-            metric = EmployeeMetrics(
-                employee_id=emp.id,
-                period_type="daily",
-                period_date=today,
-                tasks_completed=tasks_completed,
-                tasks_assigned=tasks_assigned,
-                completion_rate=completion_rate,
-                contribution_score=contribution,
-                workload_score=workload,
-                quality_score=quality,
+            # UPSERT：如果今天已有该员工的 daily 指标，更新；否则插入
+            existing = await session.execute(
+                select(EmployeeMetrics).where(
+                    EmployeeMetrics.employee_id == emp.id,
+                    EmployeeMetrics.period_type == "daily",
+                    EmployeeMetrics.period_date == today,
+                )
             )
-            session.add(metric)
-            stats["updated"] += 1
+            metric = existing.scalar_one_or_none()
+            if metric:
+                metric.tasks_completed = tasks_completed
+                metric.tasks_assigned = tasks_assigned
+                metric.completion_rate = completion_rate
+                metric.contribution_score = contribution
+                metric.workload_score = workload
+                metric.quality_score = quality
+            else:
+                metric = EmployeeMetrics(
+                    employee_id=emp.id,
+                    period_type="daily",
+                    period_date=today,
+                    tasks_completed=tasks_completed,
+                    tasks_assigned=tasks_assigned,
+                    completion_rate=completion_rate,
+                    contribution_score=contribution,
+                    workload_score=workload,
+                    quality_score=quality,
+                )
+                session.add(metric)
 
+            stats["updated"] += 1
             emp_summaries.append({
                 "id": str(emp.id), "name": emp.name, "department": emp.department,
                 "completed": tasks_completed, "assigned": tasks_assigned,
@@ -74,7 +133,6 @@ async def _compute_metrics() -> dict:
 
         await session.commit()
 
-    # 入库：每日HR摘要
     if emp_summaries:
         try:
             await _save_hr_summary_to_kb(today, emp_summaries)
@@ -112,51 +170,7 @@ async def _save_hr_summary_to_kb(date_str: str, summaries: list):
     logger.info(f"HR摘要已入库: {date_str}")
 
 
-async def _get_employee_task_data(emp) -> dict:
-    """从Bitable获取员工任务数据（如果已绑定）"""
-    # 如果飞书未配置，返回默认值
-    # 实际使用时会从Bitable读取该员工的任务完成情况
-    try:
-        from sqlalchemy import select
-        from app.database import async_session
-        from app.models import LarkAsset
-        from app.services.feishu.bitable import list_records
-
-        async with async_session() as session:
-            result = await session.execute(
-                select(LarkAsset).where(
-                    LarkAsset.asset_type == "bitable",
-                    LarkAsset.is_active == True,
-                ).limit(1)
-            )
-            asset = result.scalar_one_or_none()
-
-        if not asset:
-            return {"completed": 0, "assigned": 0, "quality": 75.0}
-
-        data = await list_records(asset.asset_token, asset.table_id)
-        items = data.get("items", [])
-
-        completed = 0
-        assigned = 0
-        for item in items:
-            fields = item.get("fields", {})
-            assignee = str(fields.get("负责人", fields.get("assignee", "")))
-            if emp.name in assignee:
-                assigned += 1
-                status = str(fields.get("状态", fields.get("status", ""))).lower()
-                if status in ("done", "完成", "已完成"):
-                    completed += 1
-
-        return {"completed": completed, "assigned": assigned, "quality": 75.0 + (completed * 2)}
-
-    except Exception as e:
-        logger.debug(f"获取员工 {emp.name} 任务数据失败: {e}")
-        return {"completed": 0, "assigned": 0, "quality": 75.0}
-
-
 def _calculate_contribution(completed: int, rate: float, data: dict) -> float:
     """计算贡献指数 (0-100)"""
-    # 公式: 完成数*10 + 完成率*30 + 质量分*0.3
     score = completed * 10 + rate * 30 + data.get("quality", 75) * 0.3
     return min(100, round(score, 1))

@@ -33,6 +33,7 @@ class EmployeeResponse(BaseModel):
     department: str
     position: str
     skills: dict
+    profile_data: dict = {}
     is_active: bool
     model_config = {"from_attributes": True}
 

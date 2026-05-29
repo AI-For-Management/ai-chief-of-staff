@@ -67,7 +67,10 @@ async def categorize(state: KBState) -> dict:
         "alert-": "风险",
         "employee-profile-": "员工",
         "employee-update-": "员工",
+        "hr-summary-": "员工",
         "project-": "项目",
+        "kb-report-": "系统",
+        "resume-": "员工",
     }
 
     count = 0
@@ -169,4 +172,131 @@ async def run_kb_manager() -> dict:
         "categorized_count": result.get("categorized_count", 0),
         "report": result.get("consolidate_report", ""),
         "saved_to_kb": result.get("saved_to_kb", False),
+    }
+
+
+# ===========================================================
+# 文档检索精华生成（被 rag.upsert_document 调用）
+# ===========================================================
+
+async def condense_for_embedding(title: str, content: str) -> str:
+    """
+    把任意文档浓缩为"检索友好"的精华版（用于 embedding 输入）。
+    完整原文仍然存 content，但 embedding 用这个精华版生成，
+    既避免 BGE 模型 512 token 上限，又确保检索精度。
+    """
+    from app.services.llm import chat_simple
+
+    # 短文档直接用原文
+    if len(content) < 400:
+        return f"{title}\n\n{content}"
+
+    try:
+        condensed = await chat_simple(
+            f"""把下面这份文档浓缩为 250 字以内的检索精华，用于知识库语义检索。
+
+**必须保留**：
+- 标题/类型（开头一句话点明这是什么文档）
+- 所有人名、项目名、产品名等专有名词
+- 关键数据、日期、百分比
+- 主要结论或决策建议
+- 加入这些语义词便于检索：公司、项目、挑战、机会、风险、决策
+
+**格式**：纯文本，不要 markdown 标记。
+
+文档标题：{title}
+
+文档内容：
+{content[:4000]}""",
+            system_prompt="你是知识库管理员，擅长把长文档压缩为精华版用于检索，绝不丢失任何关键实体和决策点。",
+            use_strong=False,
+        )
+        # 安全保险：超过 1000 字也截断
+        return condensed[:1000]
+    except Exception as e:
+        logger.warning(f"condense 失败，使用 title+前300字: {e}")
+        return f"{title}\n\n{content[:300]}"
+
+
+# ===========================================================
+# RAG 问答：基于知识库相关文档综合回答
+# ===========================================================
+
+async def answer_question(query: str, top_k: int = 8, threshold: float = 0.4) -> dict:
+    """
+    基于知识库的相关文档（相关度 >= threshold）综合回答。
+
+    Args:
+        query: 用户问题
+        top_k: 最多检索多少条
+        threshold: 相关度下限（1 - distance），低于此阈值的文档不纳入回答
+
+    Returns:
+        {
+          "answer": "AI综合回答",
+          "sources": [{"title", "doc_token", "relevance"}, ...],
+          "no_match": False  # 如果完全没相关文档则True
+        }
+    """
+    from app.services.rag import search
+    from app.services.llm import chat_simple
+
+    # 1. 检索
+    raw_results = await search(query, top_k=top_k)
+    relevant = [r for r in raw_results if (1 - r["distance"]) >= threshold]
+
+    if not relevant:
+        return {
+            "answer": "知识库中暂无与该问题相关的文档。\n\n如需获取此类信息，建议：\n- 生成相关的情报简报\n- 上传相关文档（如简历、会议纪要）\n- 让 HR Agent 跑一次更新员工指标",
+            "sources": [],
+            "no_match": True,
+        }
+
+    # 2. 拼接上下文（带编号方便LLM引用）
+    context_blocks = []
+    sources = []
+    for i, r in enumerate(relevant, 1):
+        context_blocks.append(
+            f"[文档{i}] 《{r['title']}》（相关度 {(1-r['distance'])*100:.0f}%）\n{r['content']}"
+        )
+        sources.append({
+            "index": i,
+            "title": r["title"],
+            "doc_token": r["doc_token"],
+            "relevance": round((1 - r["distance"]) * 100, 1),
+            "content_preview": r["content"][:300],
+        })
+
+    context_text = "\n\n---\n\n".join(context_blocks)
+
+    # 3. 调强模型综合回答
+    prompt = f"""请基于以下从公司知识库检索到的相关文档，回答用户的问题。
+
+【用户问题】
+{query}
+
+【知识库相关文档】
+{context_text}
+
+回答要求：
+1. **必须**基于上述文档作答，**严禁**编造文档没有的信息
+2. 若文档信息不足以回答，明确告知"知识库中相关信息有限，仅能提供..."
+3. 在涉及具体数据/结论时，标注引用来源（如"根据《CEO每日情报简报》..."）
+4. 简洁有力，3-5 段，重要观点用 **加粗** 突出
+5. 用 Markdown 格式输出"""
+
+    try:
+        answer = await chat_simple(
+            prompt,
+            system_prompt="你是公司 AI 知识库助手。回答必须基于给定文档，绝不幻觉。",
+            use_strong=True,
+        )
+    except Exception as e:
+        logger.error(f"RAG 综合回答失败: {e}")
+        answer = f"生成回答时出错：{e}"
+
+    return {
+        "answer": answer,
+        "sources": sources,
+        "no_match": False,
     }

@@ -13,25 +13,27 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 @router.post("/briefing", response_model=BriefingResponse)
 async def trigger_briefing(req: BriefingRequest):
-    """手动触发情报简报生成"""
-    from app.services.news import generate_briefing
+    """手动触发情报简报生成（走 LangGraph，包含日期注入、公司上下文、自动入库）"""
+    import uuid
+    from app.agents.briefing_graph import build_briefing_graph
 
-    content = await generate_briefing(req.topics)
+    graph = await build_briefing_graph()
+    thread_id = f"briefing-{uuid.uuid4().hex[:8]}"
+    config = {"configurable": {"thread_id": thread_id}}
+    input_state = {
+        "topics": req.topics,
+        "raw_news": [],
+        "briefing_content": "",
+        "chat_id": req.send_to_chat_id,
+        "sent": False,
+    }
 
-    sent = False
-    if req.send_to_chat_id:
-        try:
-            from app.services.feishu.messages import send_interactive_card, build_report_card
-            card = build_report_card(title="📊 CEO每日情报简报", content=content)
-            await send_interactive_card(req.send_to_chat_id, card)
-            sent = True
-        except Exception as e:
-            logger.error(f"发送简报失败: {e}")
+    result = await graph.ainvoke(input_state, config=config)
 
     return BriefingResponse(
-        content=content,
+        content=result.get("briefing_content", ""),
         topic_count=len(req.topics),
-        sent=sent,
+        sent=result.get("sent", False),
     )
 
 
@@ -49,6 +51,20 @@ async def rag_search(query: str, top_k: int = 5):
     from app.services.rag import search
     results = await search(query, top_k=top_k)
     return {"query": query, "results": results, "count": len(results)}
+
+
+class RAGAnswerRequest(BaseModel):
+    query: str
+    top_k: int = 8
+    threshold: float = 0.4
+
+
+@router.post("/rag/answer")
+async def rag_answer(req: RAGAnswerRequest):
+    """RAG综合回答 — KB管理员基于知识库相关文档生成回答"""
+    from app.agents.kb_manager_graph import answer_question
+    result = await answer_question(req.query, top_k=req.top_k, threshold=req.threshold)
+    return result
 
 
 @router.post("/knowledge/scan")

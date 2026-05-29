@@ -65,6 +65,7 @@ async def upsert_document(
     """
     插入或更新文档版本。
     内容hash变化时创建新版本并重新向量化。
+    完整原文存 content；embedding 由 KB 管理员生成的"检索精华"生成。
     """
     async with async_session() as session:
         # 查找该文档最新版本
@@ -79,8 +80,10 @@ async def upsert_document(
         if latest and latest.content_hash == content_hash:
             return {"action": "unchanged", "version": latest.version}
 
-        # 生成新embedding
-        embedding = await embed_text(content[:8000])  # 截断避免超token
+        # 走 KB 管理员生成检索精华（避免超 token 上限 + 优化检索质量）
+        from app.agents.kb_manager_graph import condense_for_embedding
+        embed_input = await condense_for_embedding(title, content)
+        embedding = await embed_text(embed_input)
 
         new_version = latest.version + 1 if latest else 1
         doc = DocumentVersion(

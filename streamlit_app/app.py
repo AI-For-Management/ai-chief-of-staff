@@ -76,7 +76,19 @@ with col_right:
     try:
         projs = requests.get(f"{API_BASE}/api/projects?status=in_progress", timeout=10).json()
         if projs:
-            for p in projs[:4]:
+            # 简单分页：每页 4 个
+            page_size = 4
+            total = len(projs)
+            total_pages = (total + page_size - 1) // page_size
+            page = st.session_state.get("dashboard_proj_page", 1)
+            if page > total_pages:
+                page = total_pages
+            start = (page - 1) * page_size
+            end = start + page_size
+
+            st.caption(f"共 {total} 个，第 {page}/{total_pages} 页")
+
+            for p in projs[start:end]:
                 with st.container(border=True):
                     st.markdown(f"**{p['name']}**")
                     st.caption(f"负责人：{p.get('owner_name') or '（待定）'}")
@@ -84,6 +96,17 @@ with col_right:
                     if events:
                         latest_ev = events[-1]
                         st.markdown(f"最新进展：`{latest_ev.get('time', '')}` {latest_ev.get('event', '')}")
+
+            # 分页控件
+            if total_pages > 1:
+                pc1, pc2, pc3 = st.columns([1, 2, 1])
+                if pc1.button("← 上一页", disabled=(page == 1), use_container_width=True, key="proj_prev"):
+                    st.session_state.dashboard_proj_page = max(1, page - 1)
+                    st.rerun()
+                pc2.markdown(f"<div style='text-align:center;padding-top:8px;'>{page} / {total_pages}</div>", unsafe_allow_html=True)
+                if pc3.button("下一页 →", disabled=(page == total_pages), use_container_width=True, key="proj_next"):
+                    st.session_state.dashboard_proj_page = min(total_pages, page + 1)
+                    st.rerun()
         else:
             st.info("当前没有进行中的项目。")
         st.page_link("pages/2_项目进程.py", label="查看全部项目 →")
@@ -115,17 +138,55 @@ with col_l2:
 
 # === 风险提醒 ===
 with col_r2:
-    st.subheader("风险提醒", help="最近一次风险扫描的关键提示")
+    h1, h2 = st.columns([3, 2])
+    h1.subheader("风险提醒", help="最近一次风险扫描的关键提示")
+    if h2.button("立即扫描", use_container_width=True,
+                  help="手动触发风险扫描（预警Agent），完成后此处自动刷新"):
+        with st.spinner("扫描中（约 30-60 秒）..."):
+            try:
+                # 同步调用风险扫描，等扫完再刷新页面
+                # 注意：alerts/scan 是 Celery delay()，但我们需要同步等待
+                # 简单做法：直接走 alert_graph，但API是POST异步任务
+                # 退而求其次：触发后等10秒强制刷新
+                resp = requests.post(
+                    f"{API_BASE}/api/agents/alerts/scan",
+                    params={"chat_id": ""},
+                    timeout=10,
+                )
+                task_id = resp.json().get("task_id", "")
+                # 轮询等待结果（最多 90 秒）
+                import time
+                for _ in range(30):
+                    time.sleep(3)
+                    # 通过查 KB 看 alert-* 是否有今天的新文档
+                    chk = requests.post(f"{API_BASE}/api/agents/rag/search",
+                                         params={"query": "风险报告", "top_k": 1}, timeout=5)
+                    rs = chk.json().get("results", [])
+                    if rs and rs[0]["doc_token"].startswith("alert-"):
+                        # 简单地用日期/时间判断是否是新生成的
+                        from datetime import datetime as dt
+                        today_prefix = f"alert-{dt.now().strftime('%Y-%m-%d')}"
+                        if rs[0]["doc_token"].startswith(today_prefix):
+                            st.success("扫描完成")
+                            break
+                else:
+                    st.info("扫描已提交，结果稍后会显示")
+            except Exception as e:
+                st.error(f"扫描失败: {e}")
+            st.rerun()
+
     try:
         resp = requests.post(f"{API_BASE}/api/agents/rag/search",
-                              params={"query": "风险报告", "top_k": 1}, timeout=10)
+                              params={"query": "风险报告", "top_k": 3}, timeout=10)
         results = resp.json().get("results", [])
-        latest = next((r for r in results if r["doc_token"].startswith("alert-")), None)
-        if latest:
+        # 只保留 alert-* 开头的，按时间倒序
+        alerts = [r for r in results if r["doc_token"].startswith("alert-")]
+        if alerts:
+            latest = alerts[0]
             with st.container(border=True):
                 st.markdown(f"**{latest['title']}**")
                 st.caption(f"扫描时间：{latest['last_updated']}")
-                st.markdown(latest["content"][:400] + "...")
+                st.markdown(latest["content"][:400] + ("..." if len(latest["content"]) > 400 else ""))
         else:
             st.success("当前无风险提醒")
     except Exception:

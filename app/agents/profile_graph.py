@@ -25,7 +25,7 @@ class ProfileState(TypedDict):
 
 
 async def load_employee_data(state: ProfileState) -> dict:
-    """加载员工的所有数据：基本信息 + 项目参与 + 任务指标"""
+    """加载员工的所有数据：基本信息 + 项目参与 + 任务指标 + 知识库相关文档（含简历）"""
     from sqlalchemy import select, desc
     from app.database import async_session
     from app.models import Employee, EmployeeMetrics, ProjectMember, Project
@@ -68,6 +68,34 @@ async def load_employee_data(state: ProfileState) -> dict:
             "avg_workload": sum(m.workload_score for m in metrics_list) / max(len(metrics_list), 1),
         }
 
+    # 从知识库自动检索员工相关资料（简历、过往评价、被提及记录）
+    extra_resume = ""
+    try:
+        from app.services.rag import search
+        # 用 "员工名 简历 工作记录" 作为查询，检索KB中所有相关文档
+        rag_query = f"{emp.name} 简历 工作经历 评价"
+        rag_results = await search(rag_query, top_k=8)
+        # 只取相关度 >= 0.45 的（避免无关文档干扰）
+        relevant = [r for r in rag_results if (1 - r["distance"]) >= 0.45]
+        # 排除该员工自己已有的画像（避免循环参考）
+        relevant = [r for r in relevant if not r["doc_token"].startswith(f"employee-profile-{state['employee_id']}")]
+
+        if relevant:
+            extra_parts = []
+            for r in relevant[:5]:
+                extra_parts.append(f"《{r['title']}》:\n{r['content'][:600]}")
+            extra_resume = "\n\n".join(extra_parts)
+    except Exception as e:
+        logger.warning(f"RAG 检索员工相关资料失败: {e}")
+
+    # 合并 UI 上传的简历 + 知识库自动检索内容
+    user_resume = state.get("resume_text", "") or ""
+    combined_resume = user_resume
+    if extra_resume:
+        combined_resume = (
+            (user_resume + "\n\n---\n\n") if user_resume else ""
+        ) + f"【知识库相关资料】\n{extra_resume}"
+
     return {
         "employee_name": emp.name,
         "department": emp.department,
@@ -75,6 +103,7 @@ async def load_employee_data(state: ProfileState) -> dict:
         "skills_input": emp.skills or {},
         "project_history": projects,
         "task_metrics": metrics_summary,
+        "resume_text": combined_resume,
     }
 
 

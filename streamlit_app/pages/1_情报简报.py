@@ -39,7 +39,7 @@ if generate:
                 resp = requests.post(
                     f"{API_BASE}/api/agents/briefing",
                     json={"topics": topics, "send_to_chat_id": chat_id},
-                    timeout=120,
+                    timeout=300,
                 )
                 data = resp.json()
                 sent_text = "已推送飞书" if data.get("sent") else "未推送"

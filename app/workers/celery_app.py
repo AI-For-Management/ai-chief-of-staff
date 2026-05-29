@@ -8,6 +8,14 @@ celery_app = Celery(
     "chief_of_staff",
     broker=redis_url,
     backend=redis_url,
+    # 显式列出所有包含 @celery_app.task 的模块
+    include=[
+        "app.workers.intel_tasks",
+        "app.workers.knowledge_tasks",
+        "app.workers.alert_tasks",
+        "app.workers.hr_tasks",
+        "app.workers.kb_tasks",
+    ],
 )
 
 celery_app.conf.update(
@@ -49,5 +57,3 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(hour=3, minute=0),
     },
 }
-
-celery_app.autodiscover_tasks(["app.workers"])
