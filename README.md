@@ -66,7 +66,7 @@
 
 **Linux / macOS:**
 ```bash
-git clone https://github.com/YOUR_USERNAME/ai-chief-of-staff.git
+git clone https://github.com/AI-For-Management/ai-chief-of-staff.git
 cd ai-chief-of-staff
 chmod +x install.sh
 ./install.sh
@@ -74,7 +74,7 @@ chmod +x install.sh
 
 **Windows:**
 ```cmd
-git clone https://github.com/YOUR_USERNAME/ai-chief-of-staff.git
+git clone https://github.com/AI-For-Management/ai-chief-of-staff.git
 cd ai-chief-of-staff
 install.bat
 ```
