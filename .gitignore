@@ -1,0 +1,61 @@
+# Environment
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Docker volumes / runtime
+celerybeat-schedule
+celerybeat.pid
+*.pid
+*.log
+
+# Database backups
+*.sql
+*.dump
+backup_*.sql
+
+# Local data
+data/
+chat_exports/
+inbox/
+organized/
+
+# Memory / cache
+memory/
+*.pyc
+
+# OS
+Thumbs.db
+desktop.ini
+
+# Claude Code
+.claude/

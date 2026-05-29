@@ -1,0 +1,39 @@
+# Web framework
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pydantic-settings>=2.9
+
+# Database
+sqlalchemy[asyncio]>=2.0.40
+asyncpg>=0.31
+psycopg2-binary>=2.9
+pgvector>=0.4
+alembic>=1.15
+
+# Redis + Celery
+redis>=6.0
+celery[redis]>=5.5
+
+# LangGraph (let pip resolve compatible versions)
+langgraph-checkpoint-redis
+langgraph
+langchain-core
+langchain-openai
+
+# LLM
+openai>=2.0
+
+# Feishu
+lark-oapi>=1.4
+
+# Search
+ddgs>=9.0
+
+# Utilities
+httpx>=0.28
+tenacity>=9.0
+python-dotenv>=1.0
+
+# Streamlit
+streamlit>=1.45
+requests>=2.34
