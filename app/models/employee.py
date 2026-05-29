@@ -19,6 +19,7 @@ class Employee(Base):
     position: Mapped[str] = mapped_column(String(100), default="")
     feishu_open_id: Mapped[str] = mapped_column(String(200), default="", comment="飞书open_id")
     skills: Mapped[dict] = mapped_column(JSONB, default=dict, comment="技能标签及熟练度 {skill: level}")
+    profile_data: Mapped[dict] = mapped_column(JSONB, default=dict, comment="员工多维图谱 JSON")
     is_active: Mapped[bool] = mapped_column(default=True)
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

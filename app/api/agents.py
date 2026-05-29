@@ -101,6 +101,28 @@ async def revise_plan(req: ReviseRequest):
     return result
 
 
+@router.post("/kb/manage")
+async def trigger_kb_manage():
+    """触发知识库管理员（去重+分类）"""
+    from app.agents.kb_manager_graph import run_kb_manager
+    result = await run_kb_manager()
+    return result
+
+
+class EmployeeChatRequest(BaseModel):
+    employee_id: str
+    message: str
+    thread_id: str = ""
+
+
+@router.post("/employees/chat")
+async def employee_chat(req: EmployeeChatRequest):
+    """与AI讨论某位员工"""
+    from app.agents.employee_chat_graph import chat_about_employee
+    result = await chat_about_employee(req.employee_id, req.message, req.thread_id)
+    return result
+
+
 @router.post("/approve")
 async def approve_action(thread_id: str, action: str = "approve"):
     """

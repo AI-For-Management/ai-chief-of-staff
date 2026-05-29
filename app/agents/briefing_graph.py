@@ -24,7 +24,7 @@ async def crawl_news(state: BriefingState) -> dict:
 
 
 async def summarize(state: BriefingState) -> dict:
-    """用LLM生成结构化简报"""
+    """用LLM生成结构化简报，结合公司项目现状评估影响"""
     from app.services.llm import chat_simple
 
     raw_news = state["raw_news"]
@@ -40,24 +40,54 @@ async def summarize(state: BriefingState) -> dict:
     if not news_text.strip():
         return {"briefing_content": "今日未抓取到相关新闻。"}
 
-    prompt = f"""基于以下新闻素材，生成CEO每日科技与行业情报简报。
+    # 加载公司当前项目作为上下文
+    company_context = await _load_company_context()
+
+    prompt = f"""基于以下新闻素材和公司当前业务，生成CEO每日科技与行业情报简报。
+
+【公司当前业务情况】
+{company_context}
+
+【新闻素材】
+{news_text}
 
 要求：
 1. 按话题分类，每个话题提炼3-5条核心要点
 2. 突出关键数字、趋势和潜在影响
-3. 如有值得CEO关注的风险或机会，单独标注
-4. Markdown格式
-
-新闻素材：
-{news_text}"""
+3. **结合公司业务**，评估每条重要新闻对本公司的影响（机会/风险）
+4. 如有值得CEO关注的紧急事项，单独标注
+5. Markdown格式"""
 
     briefing = await chat_simple(
         prompt,
-        system_prompt="你是资深商业情报分析师，擅长从零散新闻提炼战略洞察。简洁有力，有数据支撑。",
+        system_prompt="你是资深商业情报分析师，擅长从零散新闻提炼对本公司的战略洞察。",
         use_strong=True,
     )
 
     return {"briefing_content": briefing}
+
+
+async def _load_company_context() -> str:
+    """从数据库加载公司当前的项目和业务上下文"""
+    from sqlalchemy import select
+    from app.database import async_session
+    from app.models import Project
+
+    parts = []
+    try:
+        async with async_session() as session:
+            result = await session.execute(
+                select(Project).where(Project.status == "in_progress").limit(10)
+            )
+            projects = result.scalars().all()
+            if projects:
+                parts.append("**进行中的项目**:")
+                for p in projects:
+                    parts.append(f"- {p.name}: {p.description[:100]}")
+    except Exception as e:
+        logger.warning(f"加载公司上下文失败: {e}")
+
+    return "\n".join(parts) if parts else "（暂无进行中的项目数据）"
 
 
 async def send_briefing(state: BriefingState) -> dict:

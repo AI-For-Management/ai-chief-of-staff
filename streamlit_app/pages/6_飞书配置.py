@@ -19,12 +19,11 @@ def api_post(path, data):
 def api_delete(path):
     return requests.delete(f"{API_BASE}{path}", timeout=10).json()
 
-page_header("🔗 飞书配置", "管理飞书应用凭证和资产绑定")
+page_header("飞书配置", "管理飞书应用凭证、绑定多维表格/文档/Wiki/群聊")
 
-# ===== 应用凭证 =====
-st.subheader("应用凭证")
+st.subheader("应用凭证", help="飞书自建应用的 App ID 与 App Secret，从开放平台后台获取")
 
-with st.expander("➕ 添加飞书应用", expanded=False):
+with st.expander("添加飞书应用", expanded=False):
     with st.form("add_config"):
         name = st.text_input("配置名称", placeholder="如：正式环境")
         app_id = st.text_input("App ID")
@@ -33,8 +32,8 @@ with st.expander("➕ 添加飞书应用", expanded=False):
         verification_token = st.text_input("Verification Token（选填）")
 
         c1, c2 = st.columns(2)
-        test_btn = c1.form_submit_button("🔍 测试连通", use_container_width=True)
-        save_btn = c2.form_submit_button("💾 保存", use_container_width=True)
+        test_btn = c1.form_submit_button("测试连通", use_container_width=True)
+        save_btn = c2.form_submit_button("保存", use_container_width=True)
 
         if test_btn and app_id and app_secret:
             result = api_post("/api/admin/lark-configs/test", {"app_id": app_id, "app_secret": app_secret})
@@ -59,7 +58,7 @@ try:
     configs = api_get("/api/admin/lark-configs")
     if configs:
         for cfg in configs:
-            status = "🟢 启用" if cfg['is_active'] else "🔴 禁用"
+            status = "启用 启用" if cfg['is_active'] else "禁用 禁用"
             with st.container(border=True):
                 st.markdown(f"**{cfg['name']}** — `{cfg['app_id'][:16]}...` — {status}")
                 if st.button(f"删除此配置", key=f"del_cfg_{cfg['id']}"):
@@ -76,7 +75,7 @@ st.divider()
 st.subheader("资产绑定")
 st.caption("绑定多维表格、云文档、Wiki或群聊，AI将自动监控和同步")
 
-with st.expander("➕ 添加资产", expanded=False):
+with st.expander("添加资产", expanded=False):
     try:
         configs = api_get("/api/admin/lark-configs")
         config_map = {f"{c['name']} ({c['app_id'][:8]}...)": c['id'] for c in configs}
@@ -98,7 +97,7 @@ with st.expander("➕ 添加资产", expanded=False):
             table_id = st.text_input("表ID（多维表格专用）", placeholder="tblXXXX")
             cron = st.text_input("同步频率（Cron表达式）", value="0 */6 * * *")
 
-            if st.form_submit_button("💾 保存", use_container_width=True):
+            if st.form_submit_button("保存", use_container_width=True):
                 try:
                     api_post("/api/admin/lark-assets", {
                         "config_id": config_map[sel], "asset_type": asset_type,

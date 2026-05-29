@@ -12,7 +12,7 @@ sidebar_branding()
 
 API_BASE = "http://fastapi:8000"
 
-page_header("📋 智能规划", "CEO说一句话，AI结合知识库拆解任务，多轮讨论后派发执行")
+page_header("智能规划", "你说一句战略意图，AI结合知识库和项目数据多轮讨论后派发执行")
 
 # 初始化会话状态
 if "plan_messages" not in st.session_state:
@@ -26,7 +26,7 @@ if "plan_status" not in st.session_state:
 chat_col, plan_col = st.columns([1, 1], gap="large")
 
 with chat_col:
-    st.subheader("💬 与AI讨论")
+    st.subheader("与AI讨论", help="多轮对话式规划：先描述战略意图，然后根据AI生成的方案提修改意见，反复迭代直至满意。")
 
     # 对话历史
     for msg in st.session_state.plan_messages:
@@ -47,11 +47,14 @@ with chat_col:
     c1, c2, c3 = st.columns(3)
 
     with c1:
-        send = st.button("🚀 发送", type="primary", use_container_width=True)
+        send = st.button("发送", type="primary", use_container_width=True,
+                          help="将左侧文本发给AI，首次为初稿，后续为修订。")
     with c2:
-        approve = st.button("✅ 批准派发", use_container_width=True)
+        approve = st.button("批准派发", use_container_width=True,
+                             help="对当前方案批准，触发飞书Bitable写入和任务创建。")
     with c3:
-        reset = st.button("🔄 新对话", use_container_width=True)
+        reset = st.button("新对话", use_container_width=True,
+                           help="清空当前会话，开始新的规划。")
 
     if send and user_input:
         st.session_state.plan_messages.append({"role": "user", "content": user_input})
@@ -96,7 +99,7 @@ with chat_col:
                 data = resp.json()
                 st.session_state.plan_messages.append({
                     "role": "assistant",
-                    "content": f"✅ 已批准派发。{data.get('result', '')}",
+                    "content": f"已批准派发。{data.get('result', '')}",
                 })
                 st.session_state.plan_status = "idle"
             except Exception as e:
@@ -110,7 +113,7 @@ with chat_col:
         st.rerun()
 
 with plan_col:
-    st.subheader("📄 当前方案")
+    st.subheader("当前方案", help="AI生成的最新方案预览。批准后会写入飞书。")
 
     ai_msgs = [m for m in st.session_state.plan_messages if m["role"] == "assistant"]
     if ai_msgs:

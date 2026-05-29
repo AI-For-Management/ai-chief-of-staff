@@ -28,13 +28,18 @@ def require_login():
     if st.session_state.get("authenticated"):
         return True
 
-    st.title("🔐 登录")
-    st.caption("AI首席参谋 · 请输入账号密码")
+    # 居中logo + 副标题
+    st.markdown("""
+        <div style="text-align:center; padding:1rem 0 2rem 0;">
+            <h1 style="margin:0; font-size:2rem;">AI 首席参谋</h1>
+            <p style="color:#64748b; margin:0.5rem 0 0 0;">企业级智能管理平台</p>
+        </div>
+    """, unsafe_allow_html=True)
 
     with st.form("login_form"):
-        username = st.text_input("用户名")
-        password = st.text_input("密码", type="password")
-        submit = st.form_submit_button("登录", use_container_width=True)
+        username = st.text_input("用户名", placeholder="请输入用户名")
+        password = st.text_input("密码", type="password", placeholder="请输入密码")
+        submit = st.form_submit_button("登录", use_container_width=True, type="primary")
 
         if submit:
             users = _get_users()
@@ -52,7 +57,7 @@ def logout_button():
     """在侧边栏显示登出按钮"""
     if st.session_state.get("authenticated"):
         st.sidebar.caption(f"当前用户: {st.session_state.get('username', '')}")
-        if st.sidebar.button("🚪 退出登录"):
+        if st.sidebar.button("退出登录", use_container_width=True):
             st.session_state.authenticated = False
             st.session_state.username = ""
             st.rerun()

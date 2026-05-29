@@ -209,3 +209,27 @@ async def refresh_metrics():
     from app.workers.hr_tasks import update_employee_metrics
     task = update_employee_metrics.delay()
     return {"task_id": task.id, "status": "submitted"}
+
+
+# ===== 员工图谱 =====
+
+class ProfileGenerateRequest(BaseModel):
+    resume_text: str = ""
+
+
+@router.post("/employees/{emp_id}/profile/generate")
+async def generate_employee_profile(emp_id: UUID, req: ProfileGenerateRequest):
+    """为员工生成多维能力图谱"""
+    from app.agents.profile_graph import generate_profile
+    profile = await generate_profile(str(emp_id), req.resume_text)
+    return {"employee_id": str(emp_id), "profile": profile}
+
+
+@router.get("/employees/{emp_id}/profile")
+async def get_employee_profile(emp_id: UUID, db: AsyncSession = Depends(get_db)):
+    """获取员工图谱"""
+    from app.models import Employee
+    emp = await db.get(Employee, emp_id)
+    if not emp:
+        raise HTTPException(404, "员工不存在")
+    return {"employee_id": str(emp_id), "name": emp.name, "profile": emp.profile_data or {}}

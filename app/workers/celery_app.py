@@ -43,6 +43,11 @@ celery_app.conf.beat_schedule = {
         "task": "app.workers.hr_tasks.update_employee_metrics",
         "schedule": crontab(hour=23, minute=0),
     },
+    # KB管理员: 每天凌晨3:00 去重和分类
+    "kb-manage": {
+        "task": "app.workers.kb_tasks.run_kb_manage",
+        "schedule": crontab(hour=3, minute=0),
+    },
 }
 
 celery_app.autodiscover_tasks(["app.workers"])

@@ -1,0 +1,172 @@
+"""知识库管理员 Agent — 去重、分类、打标签"""
+import logging
+from typing import TypedDict
+from datetime import datetime
+
+from langgraph.graph import StateGraph, START, END
+
+from app.agents import get_checkpointer_async
+
+logger = logging.getLogger(__name__)
+
+
+class KBState(TypedDict):
+    duplicates: list  # [{"doc_a": "...", "doc_b": "...", "similarity": 0.92}]
+    categorized_count: int
+    consolidate_report: str
+    saved_to_kb: bool
+
+
+async def scan_duplicates(state: KBState) -> dict:
+    """用向量距离找出疑似重复文档"""
+    from sqlalchemy import text
+    from app.database import async_session
+
+    duplicates = []
+
+    # SQL: 自连接，找distance < 0.2 的对（不含自己）
+    sql = text("""
+        SELECT a.id::text, a.doc_token AS token_a, a.title AS title_a,
+               b.id::text, b.doc_token AS token_b, b.title AS title_b,
+               (a.embedding <=> b.embedding) AS distance
+        FROM document_versions a, document_versions b
+        WHERE a.embedding IS NOT NULL
+          AND b.embedding IS NOT NULL
+          AND a.id < b.id
+          AND a.doc_token != b.doc_token
+          AND (a.embedding <=> b.embedding) < 0.20
+        ORDER BY distance ASC
+        LIMIT 30
+    """)
+
+    try:
+        async with async_session() as session:
+            result = await session.execute(sql)
+            rows = result.fetchall()
+            for r in rows:
+                duplicates.append({
+                    "id_a": r[0], "token_a": r[1], "title_a": r[2],
+                    "id_b": r[3], "token_b": r[4], "title_b": r[5],
+                    "similarity": float(1.0 - r[6]),
+                })
+    except Exception as e:
+        logger.error(f"去重扫描失败: {e}")
+
+    logger.info(f"知识库去重扫描发现 {len(duplicates)} 对疑似重复")
+    return {"duplicates": duplicates}
+
+
+async def categorize(state: KBState) -> dict:
+    """根据 doc_token 前缀给文档打分类标签"""
+    from sqlalchemy import select, update
+    from app.database import async_session
+    from app.models import DocumentVersion
+
+    category_map = {
+        "briefing-": "情报",
+        "alert-": "风险",
+        "employee-profile-": "员工",
+        "employee-update-": "员工",
+        "project-": "项目",
+    }
+
+    count = 0
+    async with async_session() as session:
+        result = await session.execute(select(DocumentVersion))
+        docs = result.scalars().all()
+        for d in docs:
+            cat = "其他"
+            for prefix, c in category_map.items():
+                if d.doc_token.startswith(prefix):
+                    cat = c
+                    break
+            current_meta = d.doc_metadata or {}
+            if current_meta.get("category") != cat:
+                current_meta["category"] = cat
+                d.doc_metadata = current_meta
+                count += 1
+        await session.commit()
+
+    logger.info(f"知识库分类: 更新 {count} 条")
+    return {"categorized_count": count}
+
+
+async def generate_report(state: KBState) -> dict:
+    """生成知识库管理报告"""
+    duplicates = state.get("duplicates", [])
+    categorized = state.get("categorized_count", 0)
+
+    report = f"""# 知识库管理报告 {datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+## 文档分类
+共更新 **{categorized}** 条文档分类标签。
+
+## 疑似重复文档 ({len(duplicates)} 对)
+
+"""
+    if duplicates:
+        for d in duplicates[:20]:
+            report += f"- **{d['title_a']}** ↔ **{d['title_b']}** （相似度 {d['similarity']*100:.1f}%）\n"
+            report += f"  - tokens: `{d['token_a']}` ↔ `{d['token_b']}`\n"
+        report += "\n建议: 由人工审核以上文档对，决定是否合并或删除。\n"
+    else:
+        report += "未发现疑似重复文档。\n"
+
+    return {"consolidate_report": report}
+
+
+async def save_report_to_kb(state: KBState) -> dict:
+    """把报告本身存入知识库"""
+    import hashlib
+    from app.services.rag import upsert_document
+
+    content = state.get("consolidate_report", "")
+    if not content:
+        return {"saved_to_kb": False}
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        await upsert_document(
+            doc_token=f"kb-report-{today}",
+            title=f"知识库管理报告 {today}",
+            content=content,
+            content_hash=hashlib.md5(content.encode()).hexdigest(),
+        )
+        return {"saved_to_kb": True}
+    except Exception as e:
+        logger.error(f"知识库报告入库失败: {e}")
+        return {"saved_to_kb": False}
+
+
+async def build_kb_manager_graph():
+    graph = StateGraph(KBState)
+    graph.add_node("scan_duplicates", scan_duplicates)
+    graph.add_node("categorize", categorize)
+    graph.add_node("generate_report", generate_report)
+    graph.add_node("save_report_to_kb", save_report_to_kb)
+    graph.add_edge(START, "scan_duplicates")
+    graph.add_edge("scan_duplicates", "categorize")
+    graph.add_edge("categorize", "generate_report")
+    graph.add_edge("generate_report", "save_report_to_kb")
+    graph.add_edge("save_report_to_kb", END)
+    cp = await get_checkpointer_async()
+    return graph.compile(checkpointer=cp)
+
+
+async def run_kb_manager() -> dict:
+    """运行知识库管理任务"""
+    import uuid
+    graph = await build_kb_manager_graph()
+    thread_id = f"kb-manager-{uuid.uuid4().hex[:8]}"
+    config = {"configurable": {"thread_id": thread_id}}
+    state = {
+        "duplicates": [], "categorized_count": 0,
+        "consolidate_report": "", "saved_to_kb": False,
+    }
+    result = await graph.ainvoke(state, config=config)
+    return {
+        "duplicates_count": len(result.get("duplicates", [])),
+        "categorized_count": result.get("categorized_count", 0),
+        "report": result.get("consolidate_report", ""),
+        "saved_to_kb": result.get("saved_to_kb", False),
+    }

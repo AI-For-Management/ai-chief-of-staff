@@ -10,6 +10,7 @@ from app.api.webhook import router as webhook_router
 from app.api.admin import router as admin_router
 from app.api.agents import router as agents_router
 from app.api.hr import router as hr_router
+from app.api.projects import router as projects_router
 
 settings = get_settings()
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL))
@@ -35,3 +36,4 @@ app.include_router(webhook_router)
 app.include_router(admin_router)
 app.include_router(agents_router)
 app.include_router(hr_router)
+app.include_router(projects_router)

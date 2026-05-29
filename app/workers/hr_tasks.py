@@ -32,12 +32,13 @@ async def _compute_metrics() -> dict:
     month = datetime.now().strftime("%Y-%m")
     year = datetime.now().strftime("%Y")
 
-    stats = {"updated": 0}
+    stats = {"updated": 0, "kb_saved": 0}
 
     async with async_session() as session:
         result = await session.execute(select(Employee).where(Employee.is_active == True))
         employees = result.scalars().all()
 
+        emp_summaries = []
         for emp in employees:
             # 从Bitable获取任务完成数据
             task_data = await _get_employee_task_data(emp)
@@ -47,7 +48,7 @@ async def _compute_metrics() -> dict:
             tasks_assigned = task_data.get("assigned", 0)
             completion_rate = tasks_completed / max(tasks_assigned, 1)
             contribution = _calculate_contribution(tasks_completed, completion_rate, task_data)
-            workload = min(100, tasks_assigned * 10)  # 简化计算
+            workload = min(100, tasks_assigned * 10)
             quality = task_data.get("quality", 75.0)
 
             # 写入日指标
@@ -65,9 +66,50 @@ async def _compute_metrics() -> dict:
             session.add(metric)
             stats["updated"] += 1
 
+            emp_summaries.append({
+                "id": str(emp.id), "name": emp.name, "department": emp.department,
+                "completed": tasks_completed, "assigned": tasks_assigned,
+                "contribution": contribution, "workload": workload,
+            })
+
         await session.commit()
 
+    # 入库：每日HR摘要
+    if emp_summaries:
+        try:
+            await _save_hr_summary_to_kb(today, emp_summaries)
+            stats["kb_saved"] = 1
+        except Exception as e:
+            logger.error(f"HR摘要入库失败: {e}")
+
     return stats
+
+
+async def _save_hr_summary_to_kb(date_str: str, summaries: list):
+    """把每日HR摘要存入知识库"""
+    import hashlib
+    from app.services.rag import upsert_document
+
+    content = f"# 团队工作摘要 {date_str}\n\n"
+    content += f"在职人员: {len(summaries)}人\n\n"
+    content += "## 各员工今日表现\n\n"
+
+    sorted_summaries = sorted(summaries, key=lambda x: x["contribution"], reverse=True)
+    for s in sorted_summaries:
+        content += (f"- **{s['name']}** ({s['department']}): "
+                    f"完成 {s['completed']}/{s['assigned']} 任务, "
+                    f"贡献分 {s['contribution']:.1f}, 负荷 {s['workload']:.0f}\n")
+
+    avg_contribution = sum(s["contribution"] for s in summaries) / len(summaries)
+    content += f"\n**团队平均贡献分**: {avg_contribution:.1f}\n"
+
+    await upsert_document(
+        doc_token=f"hr-summary-{date_str}",
+        title=f"团队工作摘要 {date_str}",
+        content=content,
+        content_hash=hashlib.md5(content.encode()).hexdigest(),
+    )
+    logger.info(f"HR摘要已入库: {date_str}")
 
 
 async def _get_employee_task_data(emp) -> dict:

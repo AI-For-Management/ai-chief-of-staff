@@ -12,18 +12,22 @@ sidebar_branding()
 
 API_BASE = "http://fastapi:8000"
 
-page_header("📰 情报简报", "搜索行业新闻，AI分析生成结构化简报，自动存入知识库")
+page_header("情报简报", "搜索行业新闻，AI分析生成结构化简报，自动存入知识库")
 
 st.subheader("搜索话题")
 default_topics = "AI行业动态\n半导体产业\n科技公司"
-topics_text = st.text_area("每行输入一个话题", value=default_topics, height=100)
-chat_id = st.text_input("飞书推送群ID（选填，留空不发送）", placeholder="oc_xxxxx")
+topics_text = st.text_area("每行输入一个话题", value=default_topics, height=100,
+                            help="每行一个话题，AI会分别搜索后汇总。例如：AI行业动态、半导体产业。")
+chat_id = st.text_input("飞书推送群ID（选填，留空不发送）", placeholder="oc_xxxxx",
+                         help="如填写，简报会以互动卡片形式推送到该飞书群。")
 
 col1, col2 = st.columns(2)
 with col1:
-    generate = st.button("🚀 立即生成", type="primary", use_container_width=True)
+    generate = st.button("立即生成", type="primary", use_container_width=True,
+                          help="同步生成，可立即查看结果，约30-60秒。")
 with col2:
-    async_gen = st.button("⏰ 后台异步执行", use_container_width=True)
+    async_gen = st.button("后台执行", use_container_width=True,
+                           help="提交到后台异步执行，立即返回任务ID。")
 
 if generate:
     topics = [t.strip() for t in topics_text.strip().split("\n") if t.strip()]

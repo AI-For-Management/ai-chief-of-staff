@@ -191,6 +191,29 @@ async def push_alert(state: AlertState) -> dict:
         return {"sent": False}
 
 
+async def save_to_kb(state: AlertState) -> dict:
+    """把风险报告存入知识库"""
+    from datetime import datetime
+    import hashlib
+    from app.services.rag import upsert_document
+
+    content = state.get("report_content", "")
+    risk_level = state.get("risk_level", "low")
+    if not content or risk_level == "low":
+        return {}
+
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H%M")
+    doc_token = f"alert-{timestamp}"
+    title = f"风险报告 [{risk_level.upper()}] {timestamp}"
+    content_hash = hashlib.md5(content.encode()).hexdigest()
+    try:
+        await upsert_document(doc_token, title, content, content_hash)
+        logger.info(f"风险报告已入库: {title}")
+    except Exception as e:
+        logger.error(f"风险报告入库失败: {e}")
+    return {}
+
+
 async def build_alert_graph():
     """构建预警图"""
     graph = StateGraph(AlertState)
@@ -199,12 +222,14 @@ async def build_alert_graph():
     graph.add_node("analyze_sentiment", analyze_sentiment)
     graph.add_node("generate_report", generate_report)
     graph.add_node("push_alert", push_alert)
+    graph.add_node("save_to_kb", save_to_kb)
 
     graph.add_edge(START, "scan_overdue")
     graph.add_edge("scan_overdue", "analyze_sentiment")
     graph.add_edge("analyze_sentiment", "generate_report")
     graph.add_edge("generate_report", "push_alert")
-    graph.add_edge("push_alert", END)
+    graph.add_edge("push_alert", "save_to_kb")
+    graph.add_edge("save_to_kb", END)
 
     checkpointer = await get_checkpointer_async()
     return graph.compile(checkpointer=checkpointer)
