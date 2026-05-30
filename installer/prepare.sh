@@ -74,13 +74,27 @@ EXCLUDE_PATTERNS=(
 if command -v rsync >/dev/null 2>&1; then
     rsync -a "${EXCLUDE_PATTERNS[@]}" ./ "$PAYLOAD/"
 else
-    # 兜底：用 cp 然后删除排除项
-    cp -r ./. "$PAYLOAD/"
-    rm -rf "$PAYLOAD/.git" "$PAYLOAD/.github" "$PAYLOAD/installer" \
-           "$PAYLOAD/launcher" "$PAYLOAD/configurator" \
-           "$PAYLOAD/backups" "$PAYLOAD/memory" "$PAYLOAD/.env" 2>/dev/null || true
-    find "$PAYLOAD" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
-    find "$PAYLOAD" -name "*.pyc" -delete 2>/dev/null || true
+    # 兜底：用 tar 流（Git Bash 自带），同时排除目标目录避免递归
+    EXCLUDE_TAR=(
+        --exclude='./.git'
+        --exclude='./.github'
+        --exclude='./__pycache__'
+        --exclude='*.pyc'
+        --exclude='./.venv'
+        --exclude='./venv'
+        --exclude='./node_modules'
+        --exclude='./.idea'
+        --exclude='./.vscode'
+        --exclude='./installer'
+        --exclude='./launcher'
+        --exclude='./configurator'
+        --exclude='./backups'
+        --exclude='./.env'
+        --exclude='./.env.bak'
+        --exclude='./memory'
+        --exclude='*.log'
+    )
+    tar -cf - "${EXCLUDE_TAR[@]}" -C . . | tar -xf - -C "$PAYLOAD"
 fi
 
 # 写入 VERSION（覆盖以保证最新）
