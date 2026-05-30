@@ -112,12 +112,63 @@ APP_VERSION=0.1.0 "C:\Program Files (x86)\Inno Setup 6\iscc.exe" setup.iss
 
 如果 Docker Desktop 没装，安装器会询问是否打开下载页面。
 
-### Step 5 发布
+### Step 5 发布到 GitHub Release（推荐）
 
-把 `installer/dist/AI首席参谋-Setup-0.1.0.exe` 上传到客户能拿到的地方：
-- 公司私有云盘
-- GitHub Releases（如果项目公开）
-- 客户专属 SFTP
+**前置一次性准备**：
+
+1. 装 GitHub CLI（一次即可）：
+   ```powershell
+   winget install --id GitHub.cli -e --silent --accept-package-agreements --accept-source-agreements
+   ```
+   装完**重开 PowerShell** 让 PATH 生效。
+
+2. 登录（一次即可）：
+   ```powershell
+   $env:HTTPS_PROXY = "http://127.0.0.1:7890"   # 国内必须走代理才能连 github
+   $env:HTTP_PROXY  = "http://127.0.0.1:7890"
+   gh auth login
+   ```
+   选 GitHub.com → HTTPS → Yes → **Login with a web browser** → 复制 8 位 code → 浏览器粘贴 → 授权。
+
+**每次发版**：
+
+```powershell
+# 在仓库根
+cd D:\AI-Secretary
+
+# release-notes.md 写本次发版说明（功能 / 修复 / 已知问题），用 markdown
+notepad release-notes.md
+
+# 必须设代理，否则上传 .exe 中途会断
+$env:HTTPS_PROXY = "http://127.0.0.1:7890"
+$env:HTTP_PROXY  = "http://127.0.0.1:7890"
+
+gh release create v0.1.0 `
+    "installer\dist\AI首席参谋-Setup-0.1.0.exe" `
+    --title "v0.1.0 — 首个可双击安装版本" `
+    --notes-file release-notes.md
+```
+
+成功后 gh 会输出 release 网址，例如：
+```
+https://github.com/AI-For-Management/ai-chief-of-staff/releases/tag/v0.1.0
+```
+
+**这就是发给客户/试用者的链接**。他们打开后看到 "Assets" 区里直接下载 .exe 即可。
+
+> 上传 11MB 通过代理需要 30-60 秒。中途网络抖了报错，先 `gh release delete v0.1.0 --yes` 再重跑。
+
+**直链下载**（适合放进微信/邮件）：
+```
+https://github.com/AI-For-Management/ai-chief-of-staff/releases/download/v0.1.0/AI首席参谋-Setup-0.1.0.exe
+```
+
+### Step 5（备选）其他分发渠道
+
+如果不公开发布：
+- 公司私有云盘（OneDrive / 阿里云盘 / 飞书云空间）
+- 客户专属 SFTP / 内网文件服务器
+- 把 `Setup.exe` 直接发到客户群
 
 随附一份 [`docs/INSTALL.md`](../docs/INSTALL.md) 转成 PDF 或 Word，方便不联网阅读。
 

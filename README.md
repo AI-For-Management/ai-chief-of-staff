@@ -56,6 +56,8 @@
 
 ## 🚀 快速开始
 
+> **想试用一下？** 直接看 [`TRYITNOW.md`](TRYITNOW.md) — 5 步下载安装运行（约 30 分钟）。
+>
 > **想给客户做一个双击安装的 .exe？** 见 [`installer/BUILD.md`](installer/BUILD.md) — 维护者构建 Windows 安装包的步骤。
 >
 > **第一次部署、不熟悉 Docker？** 直接看 [`docs/INSTALL.md`](docs/INSTALL.md) — 面向小白的一步步图文手册（约 40 分钟跑通）。
