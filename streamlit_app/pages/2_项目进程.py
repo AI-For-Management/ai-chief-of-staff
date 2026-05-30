@@ -118,15 +118,25 @@ except Exception as e:
 if not projects:
     st.info("暂无项目，点击上方「创建新项目」添加。")
 else:
+    _badge_class = {
+        "planning": "badge-planning",
+        "in_progress": "badge-progress",
+        "done": "badge-done",
+        "paused": "badge-paused",
+    }
     for p in projects:
         status_label = STATUS_LABELS.get(p["status"], p["status"])
-        status_icon = STATUS_COLORS.get(p["status"], "⚪")
+        badge_cls = _badge_class.get(p["status"], "badge-paused")
 
         with st.container(border=True):
             c1, c2, c3 = st.columns([4, 2, 2])
-            c1.markdown(f"### {p['name']}")
+            c1.markdown(
+                f"### {p['name']} "
+                f"<span class='badge {badge_cls}'>{status_label}</span>",
+                unsafe_allow_html=True,
+            )
             c2.markdown(f"**负责人**: {p.get('owner_name') or '（待定）'}")
-            c3.markdown(f"{status_icon} **{status_label}**")
+            c3.markdown(f"成员 {len(p.get('members', []))} 人")
 
             if p["description"]:
                 st.caption(p["description"])

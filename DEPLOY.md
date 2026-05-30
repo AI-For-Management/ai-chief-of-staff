@@ -42,6 +42,8 @@ chmod +x install.sh
 脚本会引导你输入：
 - SiliconFlow API Key
 - 管理员账号密码
+
+⚠️ **生产部署额外要求**：参见 [SECURITY.md](docs/SECURITY.md) 配置 `APP_ENCRYPTION_KEY`、`ADMIN_API_TOKEN`、`ADMIN_PASSWORD_HASH`。
 - CEO账号密码
 
 ## 四、手动配置（如需）

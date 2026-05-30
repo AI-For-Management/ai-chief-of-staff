@@ -3,7 +3,7 @@ import streamlit as st
 import requests
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from style import apply_style, page_header, sidebar_branding
+from style import apply_style, page_header, sidebar_branding, style_metric_cards
 
 from auth import require_login
 require_login()
@@ -13,6 +13,88 @@ sidebar_branding()
 API_BASE = "http://fastapi:8000"
 
 page_header("人事管理", "员工档案、贡献排行榜、多维能力图谱")
+
+
+def _render_employee_detail(emp):
+    """渲染单个员工的详情：基础信息 + 指标 + 能力图谱 + 操作按钮"""
+    emp_id = emp["id"]
+    st.caption(f"工号：{emp.get('employee_id', '—')}")
+
+    skills = emp.get("skills") or {}
+    if skills:
+        st.markdown("**技能标签：** " + " · ".join(skills.keys()))
+
+    # 拉取详情（含指标与画像）
+    try:
+        detail = requests.get(f"{API_BASE}/api/hr/employees/{emp_id}", timeout=10).json()
+    except Exception as e:
+        st.error(f"加载详情失败：{e}")
+        return
+
+    # metrics 按周期分组，优先展示月度，否则取任一可用周期
+    all_metrics = detail.get("metrics") or {}
+    m = all_metrics.get("monthly") or (next(iter(all_metrics.values()), None) if all_metrics else None)
+    if m:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("贡献分", f"{m.get('contribution_score', 0):.1f}")
+        m2.metric("完成率", f"{m.get('completion_rate', 0) * 100:.0f}%")
+        m3.metric("负荷", f"{m.get('workload_score', 0):.0f}")
+        m4.metric("质量", f"{m.get('quality_score', 0):.1f}")
+
+    profile = (detail.get("employee") or {}).get("profile_data") or {}
+    if profile:
+        if profile.get("summary"):
+            st.markdown(f"**画像概述：** {profile['summary']}")
+        pc1, pc2 = st.columns(2)
+        if profile.get("strengths"):
+            pc1.markdown("**优势**\n\n" + "\n".join(f"- {s}" for s in profile["strengths"]))
+        if profile.get("weaknesses"):
+            pc2.markdown("**待提升**\n\n" + "\n".join(f"- {s}" for s in profile["weaknesses"]))
+        if profile.get("growth_suggestions"):
+            st.markdown("**成长建议**\n\n" + "\n".join(f"- {s}" for s in profile["growth_suggestions"]))
+        if profile.get("preferred_roles"):
+            st.markdown("**适合角色：** " + " · ".join(profile["preferred_roles"]))
+    else:
+        st.info("尚无能力图谱，点击下方「更新图谱」生成。")
+
+    bc1, bc2 = st.columns(2)
+    if bc1.button("更新图谱", key=f"profile_{emp_id}", use_container_width=True):
+        with st.spinner("AI 正在分析员工画像..."):
+            try:
+                r = requests.post(
+                    f"{API_BASE}/api/hr/employees/{emp_id}/profile/generate",
+                    json={"resume_text": ""}, timeout=300,
+                )
+                if r.status_code == 200:
+                    st.success("已更新")
+                    st.rerun()
+                else:
+                    st.error(f"失败：{r.text}")
+            except Exception as e:
+                st.error(f"失败：{e}")
+
+    if bc2.button("停用此员工", key=f"delete_{emp_id}", use_container_width=True):
+        try:
+            r = requests.delete(f"{API_BASE}/api/hr/employees/{emp_id}", timeout=10)
+            if r.status_code == 200:
+                st.success("已停用")
+                st.rerun()
+            else:
+                st.error(f"失败：{r.text}")
+        except Exception as e:
+            st.error(f"失败：{e}")
+
+# 团队汇总 KPI
+try:
+    _summary = requests.get(f"{API_BASE}/api/hr/summary", timeout=5).json()
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("在职人数", _summary.get("total_employees", 0))
+    k2.metric("平均贡献分", _summary.get("avg_contribution", 0))
+    k3.metric("平均完成率", f"{_summary.get('avg_completion_pct', 0)}%")
+    k4.metric("平均负荷", _summary.get("avg_workload", 0))
+    style_metric_cards()
+except Exception:
+    pass
 
 tab_board, tab_employees = st.tabs(["贡献排行榜", "员工列表"])
 
@@ -92,77 +174,55 @@ with tab_employees:
         employees = resp.json()
 
         if employees:
-            for emp in employees:
-                with st.expander(f"**{emp['name']}** — {emp['department']} · {emp['position']}"):
-                    st.caption(f"工号: {emp['employee_id']}")
+            # 搜索 + 部门筛选
+            sc1, sc2 = st.columns([3, 2])
+            keyword = sc1.text_input(
+                "搜索员工",
+                placeholder="按姓名 / 工号 / 职位 / 技能搜索",
+                label_visibility="collapsed",
+                key="emp_search",
+            ).strip().lower()
 
-                    if emp.get("skills"):
-                        skills_str = " · ".join(emp["skills"].keys())
-                        st.markdown(f"**技能**: {skills_str}")
+            all_depts = sorted({e.get("department") or "未分配" for e in employees})
+            dept_filter = sc2.selectbox(
+                "部门筛选",
+                ["全部部门"] + all_depts,
+                label_visibility="collapsed",
+                key="emp_dept_filter",
+            )
 
-                    try:
-                        detail_resp = requests.get(f"{API_BASE}/api/hr/employees/{emp['id']}", timeout=10)
-                        detail = detail_resp.json()
-                        metrics = detail.get("metrics", {})
-                        profile = detail.get("employee", {}).get("profile_data", {}) if isinstance(detail.get("employee"), dict) else {}
+            # 过滤
+            def _match(e):
+                if dept_filter != "全部部门" and (e.get("department") or "未分配") != dept_filter:
+                    return False
+                if not keyword:
+                    return True
+                hay = " ".join([
+                    e.get("name", ""), e.get("employee_id", ""),
+                    e.get("position", ""), e.get("department", ""),
+                    " ".join((e.get("skills") or {}).keys()),
+                ]).lower()
+                return keyword in hay
 
-                        if metrics:
-                            st.markdown("**最新指标**")
-                            for period_name, m in metrics.items():
-                                period_label = {"daily": "日", "weekly": "周", "monthly": "月", "yearly": "年"}.get(period_name, period_name)
-                                c1, c2, c3, c4 = st.columns(4)
-                                c1.metric(f"{period_label}·贡献分", f"{m['contribution_score']:.1f}")
-                                c2.metric(f"{period_label}·完成率", f"{m['completion_rate']*100:.0f}%")
-                                c3.metric(f"{period_label}·负荷", f"{m['workload_score']:.0f}")
-                                c4.metric(f"{period_label}·质量", f"{m['quality_score']:.1f}")
-                        else:
-                            st.caption("暂无指标数据，将在每日 23:00 自动更新")
+            filtered = [e for e in employees if _match(e)]
 
-                        # 多维图谱（阶段4填充）
-                        if profile and isinstance(profile, dict) and profile and not profile.get("error"):
-                            st.markdown("**多维能力图谱**")
-                            if profile.get("summary"):
-                                st.info(profile["summary"])
-                            if profile.get("strengths"):
-                                st.markdown(f"**优势**: {' · '.join(profile['strengths'])}")
-                            if profile.get("weaknesses"):
-                                st.markdown(f"**待提升**: {' · '.join(profile['weaknesses'])}")
-                            if profile.get("growth_suggestions"):
-                                st.markdown(f"**成长建议**: {' · '.join(profile['growth_suggestions'])}")
-                            if profile.get("preferred_roles"):
-                                st.markdown(f"**适合的角色**: {' · '.join(profile['preferred_roles'])}")
-                            if profile.get("skills"):
-                                st.markdown("**技能详情**")
-                                for s in profile["skills"]:
-                                    st.markdown(f"- {s.get('name')} (等级 {s.get('level')})：{s.get('evidence', '')}")
-                            st.caption(f"图谱更新于: {profile.get('last_updated', '未知')}")
+            # 按部门分组
+            by_dept = {}
+            for e in filtered:
+                by_dept.setdefault(e.get("department") or "未分配", []).append(e)
 
-                        # 触发图谱生成（数据自动从知识库检索，不需手动粘简历）
-                        c1, c2 = st.columns([3, 1])
-                        c1.caption("提示：员工简历请在「知识库」页上传（doc_token 用 `resume-工号`），生成图谱时会自动关联")
-                        if c2.button("更新图谱", key=f"gen_profile_{emp['id']}",
-                                      help="基于：基本信息+技能+项目参与+月度指标+知识库自动检索的相关文档"):
-                            with st.spinner("AI正在分析多维画像（约30-60秒）..."):
-                                try:
-                                    r = requests.post(
-                                        f"{API_BASE}/api/hr/employees/{emp['id']}/profile/generate",
-                                        json={"resume_text": ""},
-                                        timeout=300,
-                                    )
-                                    if r.status_code == 200:
-                                        st.success("图谱已生成")
-                                        st.rerun()
-                                    else:
-                                        st.error(f"生成失败：{r.text}")
-                                except Exception as e:
-                                    st.error(f"生成失败：{e}")
-                    except Exception:
-                        st.caption("加载详细信息失败")
+            if not filtered:
+                st.info("没有匹配的员工")
 
-                    if st.button(f"停用此员工", key=f"del_emp_{emp['id']}",
-                                  help="标记为离职，不会真正删除数据"):
-                        requests.delete(f"{API_BASE}/api/hr/employees/{emp['id']}", timeout=10)
-                        st.rerun()
+            st.caption(f"共 {len(filtered)} 人，分布在 {len(by_dept)} 个部门")
+
+            # 部门 → 员工 两级展示
+            for dept in sorted(by_dept.keys()):
+                dept_emps = by_dept[dept]
+                st.markdown(f"#### {dept}（{len(dept_emps)} 人）")
+                for emp in dept_emps:
+                    with st.expander(f"{emp['name']} · {emp['position']}"):
+                        _render_employee_detail(emp)
         else:
             st.info("暂无员工记录")
     except Exception as e:

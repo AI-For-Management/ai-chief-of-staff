@@ -2,9 +2,9 @@ FROM python:3.11-slim AS base
 
 WORKDIR /app
 
-# System deps
+# System deps（postgresql-client 提供 pg_dump，用于自动备份）
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc libpq-dev curl && \
+    apt-get install -y --no-install-recommends gcc libpq-dev curl postgresql-client && \
     rm -rf /var/lib/apt/lists/*
 
 # Python deps

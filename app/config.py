@@ -28,6 +28,17 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
 
+    # 安全（生产部署必填）
+    APP_ENCRYPTION_KEY: str = ""  # Fernet 密钥（44字符base64），用于加密 DB 中敏感字段
+    ADMIN_API_TOKEN: str = ""     # /api/admin/* 端点的 Bearer 令牌
+    ADMIN_PASSWORD_HASH: str = "" # Streamlit admin 用户的 bcrypt 哈希（强制必填）
+
+    # 可观测性（可选）
+    SENTRY_DSN: str = ""          # 留空则不初始化
+
+    # 认证用户列表（兼容旧版，新部署建议用 ADMIN_PASSWORD_HASH）
+    AUTH_USERS: str = ""          # "user1:pass1,user2:pass2"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 

@@ -3,14 +3,20 @@ import json
 import logging
 
 from fastapi import APIRouter, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhook", tags=["webhook"])
 
+# 防御飞书事件风暴：单 IP 每分钟最多 120 次（正常吞吐 ≤ 数十次）
+limiter = Limiter(key_func=get_remote_address)
+
 
 @router.post("/feishu")
+@limiter.limit("120/minute")
 async def feishu_webhook(request: Request):
     """
     飞书事件回调统一入口

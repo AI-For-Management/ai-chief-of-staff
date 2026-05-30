@@ -45,11 +45,13 @@ thread_id = st.session_state.emp_chat_thread.get(emp_id, "")
 
 st.divider()
 
-# 历史对话
-for msg in history:
-    role = "user" if msg["role"] == "user" else "assistant"
-    with st.chat_message(role):
-        st.markdown(msg["content"])
+# 历史对话（带高度滚动容器，尽量占满）
+if history:
+    with st.container(height=620):
+        for msg in history:
+            role = "user" if msg["role"] == "user" else "assistant"
+            with st.chat_message(role):
+                st.markdown(msg["content"])
 
 # 输入
 user_input = st.chat_input(f"问 AI 关于 {selected_emp['name']} 的问题...")

@@ -15,7 +15,7 @@ alembic>=1.15
 redis>=6.0
 celery[redis]>=5.5
 
-# LangGraph (let pip resolve compatible versions)
+# LangGraph
 langgraph-checkpoint-redis
 langgraph
 langchain-core
@@ -35,6 +35,18 @@ httpx>=0.28
 tenacity>=9.0
 python-dotenv>=1.0
 
+# Security
+cryptography>=42.0
+bcrypt>=4.1
+
+# Observability (optional)
+sentry-sdk[fastapi]>=2.0
+
+# Rate limiting
+slowapi>=0.1.9
+
 # Streamlit
 streamlit>=1.45
+streamlit-extras>=0.4.7
+streamlit-option-menu>=0.3.13
 requests>=2.34

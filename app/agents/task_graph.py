@@ -481,6 +481,107 @@ async def _extract_structured_tasks(plan_text: str) -> list[dict]:
     return []
 
 
+async def update_existing_project_timeline(state: TaskState) -> dict:
+    """关联到现有 in_progress 项目时，把规划摘要追加为该项目的 timeline_event。
+
+    跑在 detect_and_create_projects 之后：
+    - 若已自动创建了新项目（created_project_ids 非空），跳过（避免重复记录）
+    - 否则用 LLM 从现有 in_progress 项目里挑一个最相关的，把方案摘要 + 任务清单写进 timeline_events
+    """
+    from datetime import datetime
+    from sqlalchemy import select
+    from app.database import async_session
+    from app.models import Project
+    from app.services.llm import chat_json
+
+    # 已经走过新建项目分支，就不再二次记录
+    if state.get("created_project_ids"):
+        return {}
+
+    plan = state.get("plan_draft", "") or state.get("result", "")
+    tasks = state.get("decomposed_tasks", []) or []
+    if not plan or len(plan) < 50:
+        return {}
+
+    # 加载现有 in_progress 项目（含 planning，作为可关联候选）
+    async with async_session() as session:
+        r = await session.execute(
+            select(Project).where(Project.status.in_(["planning", "in_progress"]))
+        )
+        candidates = r.scalars().all()
+        if not candidates:
+            return {}
+
+        candidate_brief = "\n".join(
+            f"- id={p.id} 名称=《{p.name}》 描述={p.description[:80]}"
+            for p in candidates[:30]
+        )
+
+        prompt = f"""判断下面的"规划方案"是否是给某个**现有项目**追加任务/工作。
+
+【现有 in_progress / planning 项目列表】
+{candidate_brief}
+
+【本次规划方案（节选）】
+{plan[:2500]}
+
+返回 JSON：
+{{
+  "matched": true/false,         // 是否关联到现有项目
+  "project_id": "uuid 或空",     // 若 matched，填项目 id
+  "summary": "一句话说明本次规划带来的新增工作（≤30 字）"
+}}
+
+判断标准：
+- 如果方案明确围绕现有某个项目的目标推进（例如 v2.0 演示版 ⇨ 现有"产品 v2.0"项目），matched=true
+- 如果方案是开启全新方向（如新业务线、新客户），matched=false
+- 不确定时 matched=false（宁可不关联）
+"""
+
+        try:
+            verdict = await chat_json(prompt, use_strong=False)
+        except Exception as e:
+            logger.warning(f"判断关联项目失败: {e}")
+            return {}
+
+        if not isinstance(verdict, dict) or not verdict.get("matched"):
+            return {}
+
+        target_id = (verdict.get("project_id") or "").strip()
+        summary = (verdict.get("summary") or "").strip() or "AI 规划新增工作"
+
+        # 校验 id 落在候选集内（防止 LLM 幻觉）
+        target_proj = next((p for p in candidates if str(p.id) == target_id), None)
+        if not target_proj:
+            logger.info(f"LLM 给出的 project_id={target_id} 不在候选列表，跳过")
+            return {}
+
+        # 拼任务清单摘要
+        if tasks:
+            task_lines = "；".join(
+                f"{t.get('name','?')}（{t.get('assignee','待分配')}）"
+                for t in tasks[:8]
+            )
+            event_text = f"[AI规划] {summary}。任务{len(tasks)}个：{task_lines}"
+        else:
+            event_text = f"[AI规划] {summary}"
+
+        new_event = {
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "event": event_text,
+            "author": "规划Agent",
+        }
+        events = list(target_proj.timeline_events or [])
+        events.append(new_event)
+        target_proj.timeline_events = events
+        await session.commit()
+
+        logger.info(f"规划已追加到现有项目 timeline: {target_proj.name} ({target_proj.id})")
+
+    suffix = f"\n\n📌 已关联到现有项目《{target_proj.name}》并追加进度记录。"
+    return {"result": (state.get("result", "") + suffix)}
+
+
 async def build_task_graph():
     """构建项目管理图（含HITL中断）"""
     graph = StateGraph(TaskState)
@@ -489,12 +590,14 @@ async def build_task_graph():
     graph.add_node("draft_plan", draft_plan)
     graph.add_node("execute_dispatch", execute_dispatch)
     graph.add_node("detect_and_create_projects", detect_and_create_projects)
+    graph.add_node("update_existing_project_timeline", update_existing_project_timeline)
 
     graph.add_edge(START, "retrieve_context")
     graph.add_edge("retrieve_context", "draft_plan")
     graph.add_edge("draft_plan", "execute_dispatch")
     graph.add_edge("execute_dispatch", "detect_and_create_projects")
-    graph.add_edge("detect_and_create_projects", END)
+    graph.add_edge("detect_and_create_projects", "update_existing_project_timeline")
+    graph.add_edge("update_existing_project_timeline", END)
 
     checkpointer = await get_checkpointer_async()
     return graph.compile(

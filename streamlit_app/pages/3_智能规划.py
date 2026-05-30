@@ -30,7 +30,7 @@ with chat_col:
 
     # 对话历史（带滚动条）
     if st.session_state.plan_messages:
-        with st.container(height=650):
+        with st.container(height=720):
             for msg in st.session_state.plan_messages:
                 if msg["role"] == "user":
                     with st.chat_message("user"):
@@ -44,7 +44,7 @@ with chat_col:
     user_input = st.text_area(
         "输入指令或修改意见",
         placeholder="例如：下个月要上线新产品线，请安排落实\n或者：把第3个任务截止日期改为下周五",
-        height=80,
+        height=120,
     )
 
     c1, c2, c3 = st.columns(3)
@@ -114,7 +114,7 @@ with chat_col:
 
     # 派发执行中：提供刷新按钮拉取最终结果
     if st.session_state.plan_status == "running" and st.session_state.plan_thread_id:
-        if st.button("🔄 刷新派发结果", use_container_width=True,
+        if st.button("刷新派发结果", use_container_width=True,
                        help="后台异步执行中，点这个查询是否完成"):
             try:
                 r = requests.get(
@@ -126,13 +126,13 @@ with chat_col:
                 if d.get("status") == "completed":
                     st.session_state.plan_messages.append({
                         "role": "assistant",
-                        "content": f"✅ 派发完成：\n\n{d.get('result', '')}",
+                        "content": f"派发完成：\n\n{d.get('result', '')}",
                     })
                     st.session_state.plan_status = "idle"
                 elif d.get("status") == "failed":
                     st.session_state.plan_messages.append({
                         "role": "assistant",
-                        "content": f"❌ 派发失败：{d.get('result', '')}",
+                        "content": f"派发失败：{d.get('result', '')}",
                     })
                     st.session_state.plan_status = "idle"
                 else:
@@ -154,7 +154,7 @@ with plan_col:
     if ai_msgs:
         latest = ai_msgs[-1]["content"]
         # 用 height 参数自带滚动条（Streamlit 1.31+ 支持）
-        with st.container(border=True, height=750):
+        with st.container(border=True, height=820):
             st.markdown(latest)
     else:
         st.info("在左侧输入战略指令开始规划。\n\nAI将结合知识库和最新情报为你拆解任务。")

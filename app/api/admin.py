@@ -1,4 +1,4 @@
-"""管理API — 飞书配置/资产CRUD"""
+"""管理API — 飞书配置/资产CRUD（受 Bearer token 保护）"""
 import logging
 from uuid import UUID
 
@@ -13,16 +13,27 @@ from app.schemas.lark import (
     LarkAssetCreate, LarkAssetResponse,
     TestConnectionRequest,
 )
+from app.api.deps import require_admin_token
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/admin", tags=["admin"])
+router = APIRouter(
+    prefix="/api/admin",
+    tags=["admin"],
+    dependencies=[Depends(require_admin_token)],
+)
 
 
 # ========== LarkConfig CRUD ==========
 
 @router.post("/lark-configs", response_model=LarkConfigResponse)
 async def create_lark_config(data: LarkConfigCreate, db: AsyncSession = Depends(get_db)):
-    config = LarkConfig(**data.model_dump())
+    from app.security.crypto import encrypt_field
+    payload = data.model_dump()
+    # 敏感字段加密入库
+    payload["app_secret"] = encrypt_field(payload.get("app_secret", ""))
+    payload["encrypt_key"] = encrypt_field(payload.get("encrypt_key", ""))
+    payload["verification_token"] = encrypt_field(payload.get("verification_token", ""))
+    config = LarkConfig(**payload)
     db.add(config)
     await db.commit()
     await db.refresh(config)

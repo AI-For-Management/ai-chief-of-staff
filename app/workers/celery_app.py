@@ -16,6 +16,7 @@ celery_app = Celery(
         "app.workers.hr_tasks",
         "app.workers.kb_tasks",
         "app.workers.inquiry_tasks",
+        "app.workers.backup_tasks",
     ],
 )
 
@@ -61,5 +62,10 @@ celery_app.conf.beat_schedule = {
     "employee-inquiry": {
         "task": "app.workers.inquiry_tasks.run_employee_inquiry",
         "schedule": crontab(day_of_week="tue,fri", hour=9, minute=0),
+    },
+    # Phase B1: 数据库自动备份 (每天凌晨3:17，错峰避开整点)
+    "db-backup": {
+        "task": "app.workers.backup_tasks.backup_database",
+        "schedule": crontab(hour=3, minute=17),
     },
 }

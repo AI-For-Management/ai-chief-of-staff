@@ -36,7 +36,8 @@ async def _resolve_credentials(app_id: str = "", app_secret: str = "") -> tuple[
             )
             cfg = result.scalar_one_or_none()
             if cfg and cfg.app_id and cfg.app_secret:
-                return cfg.app_id, cfg.app_secret
+                from app.security.crypto import decrypt_field
+                return cfg.app_id, decrypt_field(cfg.app_secret)
     except Exception as e:
         logger.debug(f"DB读取飞书配置失败，回退到环境变量: {e}")
 

@@ -40,8 +40,10 @@ celerybeat.pid
 
 # Database backups
 *.sql
+*.sql.gz
 *.dump
 backup_*.sql
+backups/
 
 # Local data
 data/
