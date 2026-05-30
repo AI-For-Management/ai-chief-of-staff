@@ -56,6 +56,10 @@
 
 ## 🚀 快速开始
 
+> **第一次部署、不熟悉 Docker？** 直接看 [`docs/INSTALL.md`](docs/INSTALL.md) — 面向小白的一步步图文手册（约 40 分钟跑通）。
+>
+> 下面是给已经熟悉容器化部署的运维同学看的速通版。
+
 ### 前置要求
 
 - Docker & Docker Compose
@@ -100,7 +104,11 @@ docker compose exec fastapi alembic upgrade head
 
 ## 📖 文档
 
-- [`DEPLOY.md`](DEPLOY.md) — 完整部署指南（面向运维）
+- [`docs/INSTALL.md`](docs/INSTALL.md) — **小白安装手册**（推荐第一次部署的人看这个）
+- [`DEPLOY.md`](DEPLOY.md) — 简明部署指南（面向运维）
+- [`docs/SECURITY.md`](docs/SECURITY.md) — 安全配置与密钥管理
+- [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — 日常运维手册（备份/日志/故障排查）
+- [`docs/MONITORING.md`](docs/MONITORING.md) — 监控速查与告警
 - [`README_CEO.md`](README_CEO.md) — CEO使用说明书（面向最终用户）
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — 贡献指南
 
