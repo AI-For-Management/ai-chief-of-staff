@@ -13,6 +13,25 @@ from app.agents import get_checkpointer_async
 logger = logging.getLogger(__name__)
 
 
+async def _load_employee_names_str() -> str:
+    """返回所有在职员工姓名+部门的逗号分隔字符串（用于规划Agent prompt）"""
+    from sqlalchemy import select
+    from app.database import async_session
+    from app.models import Employee
+
+    try:
+        async with async_session() as session:
+            r = await session.execute(
+                select(Employee).where(Employee.is_active == True)
+            )
+            emps = r.scalars().all()
+        if not emps:
+            return "（员工库为空）"
+        return "、".join(f"{e.name}（{e.department or '未填部门'}）" for e in emps)
+    except Exception:
+        return "（员工列表加载失败）"
+
+
 async def retrieve_context(state: TaskState) -> dict:
     """从知识库检索与CEO指令相关的文档和历史简报"""
     user_input = state["user_input"]
@@ -38,39 +57,32 @@ async def retrieve_context(state: TaskState) -> dict:
 
 
 async def draft_plan(state: TaskState) -> dict:
-    """结合知识库和对话历史，生成任务规划方案"""
+    """结合知识库和对话历史，生成任务规划方案（合并两次LLM调用为一次）"""
     from app.services.llm import chat
+    from app.agents.prompts import planner_prompt
 
     user_input = state["user_input"]
     rag_context = state.get("rag_context", "")
     history = state.get("conversation_history", [])
 
-    # 构建LLM消息
-    system = """你是CEO的首席参谋（Chief of Staff）。你的职责是将CEO的战略意图拆解为可执行的具体方案。
-
-要求：
-1. 结合公司内部资料和最新情报进行分析
-2. 输出包含：项目背景分析、任务分解表、里程碑时间线、资源需求、风险提示
-3. 任务分解表格式：编号 | 任务名称 | 负责人/角色 | 截止日期 | 优先级 | 前置依赖
-4. 使用Markdown格式，专业、清晰、可执行
-5. 截止日期用具体日期（如2026-06-15），不要用"3天后"这种模糊表达"""
+    # 加载员工列表用于注入 prompt
+    employee_list = await _load_employee_names_str()
+    system = planner_prompt(employee_list=employee_list)
 
     messages = [{"role": "system", "content": system}]
 
-    # 注入知识库上下文
     if rag_context:
         messages.append({"role": "system", "content": f"【公司内部资料与最新情报】\n{rag_context}"})
 
-    # 加入对话历史
     for msg in history:
         messages.append(msg)
 
     messages.append({"role": "user", "content": f"请为以下CEO指令制定详细执行方案:\n\n{user_input}"})
 
-    plan = await chat(messages, use_strong=True, max_tokens=4096)
+    raw = await chat(messages, use_strong=True, max_tokens=4096)
 
-    # 同时尝试提取结构化任务
-    tasks = await _extract_structured_tasks(plan)
+    # 切分 markdown + JSON
+    plan, tasks = _split_plan_and_tasks(raw)
 
     new_history = history + [
         {"role": "user", "content": user_input},
@@ -87,15 +99,15 @@ async def draft_plan(state: TaskState) -> dict:
 
 
 async def revise_plan(state: TaskState) -> dict:
-    """根据CEO反馈修订方案"""
+    """根据CEO反馈修订方案（同样合并2次LLM为1次）"""
     from app.services.llm import chat
+    from app.agents.prompts import planner_revise_prompt
 
     history = state.get("conversation_history", [])
     rag_context = state.get("rag_context", "")
 
-    system = """你是CEO的首席参谋。CEO对你之前的方案提出了修改意见。
-请根据反馈修订方案，保持相同的输出格式（项目背景、任务分解表、时间线、风险）。
-只修改CEO要求修改的部分，其余保持不变。"""
+    employee_list = await _load_employee_names_str()
+    system = planner_revise_prompt(employee_list=employee_list)
 
     messages = [{"role": "system", "content": system}]
     if rag_context:
@@ -104,8 +116,8 @@ async def revise_plan(state: TaskState) -> dict:
     for msg in history:
         messages.append(msg)
 
-    plan = await chat(messages, use_strong=True, max_tokens=4096)
-    tasks = await _extract_structured_tasks(plan)
+    raw = await chat(messages, use_strong=True, max_tokens=4096)
+    plan, tasks = _split_plan_and_tasks(raw)
 
     return {
         "plan_draft": plan,
@@ -124,9 +136,44 @@ async def execute_dispatch(state: TaskState) -> dict:
     tasks = state.get("decomposed_tasks", [])
     created_ids = []
 
-    # 写入多维表格
+    # 写入多维表格 — 如未配置，自动创建一个新Bitable
     app_token = state.get("bitable_app_token", "")
     table_id = state.get("bitable_table_id", "")
+
+    if not (app_token and table_id):
+        try:
+            from app.services.feishu.bitable import create_app_with_default_table
+            from sqlalchemy import select
+            from app.database import async_session
+            from app.models import LarkAsset, LarkConfig
+            from datetime import datetime
+
+            bitable_name = f"AI规划任务表-{datetime.now().strftime('%Y%m%d-%H%M')}"
+            app_token, table_id = await create_app_with_default_table(bitable_name)
+            logger.info(f"自动创建Bitable: {bitable_name} → app={app_token[:12]}.. table={table_id[:12]}..")
+
+            # 写回 LarkAsset 表（关联到第一个活跃 lark_config）
+            async with async_session() as session:
+                cfg_r = await session.execute(
+                    select(LarkConfig).where(LarkConfig.is_active == True).limit(1)
+                )
+                cfg = cfg_r.scalar_one_or_none()
+                if cfg:
+                    new_asset = LarkAsset(
+                        config_id=cfg.id,
+                        asset_type="bitable",
+                        asset_token=app_token,
+                        asset_name=bitable_name,
+                        table_id=table_id,
+                        cron_expression="0 */6 * * *",
+                    )
+                    session.add(new_asset)
+                    await session.commit()
+                    logger.info(f"LarkAsset 已写入：{bitable_name}")
+        except Exception as e:
+            logger.error(f"自动创建Bitable失败，跳过表写入: {e}")
+            app_token = ""
+            table_id = ""
 
     if app_token and table_id:
         try:
@@ -222,8 +269,195 @@ async def execute_dispatch(state: TaskState) -> dict:
     }
 
 
+async def detect_and_create_projects(state: TaskState) -> dict:
+    """从规划方案中识别并自动创建项目（C阶段新节点）。
+
+    用LLM从 plan_draft 提取项目信息，做防护后写入 projects 表。
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import select, func as sqlfunc
+    from app.database import async_session
+    from app.models import Employee, Project, ProjectMember
+    from app.services.llm import chat_json
+
+    plan = state.get("plan_draft", "") or state.get("result", "")
+    if not plan or len(plan) < 50:
+        return {"created_project_ids": []}
+
+    prompt = f"""从下面的规划方案中识别需要创建的项目。
+
+规划方案:
+{plan[:4000]}
+
+返回JSON数组（最多5个项目）。如果方案描述的是单一目标，就只返回一个项目；如果包含多个独立工作流，可以返回多个。
+[
+  {{
+    "name": "项目名称（简短，10字内）",
+    "description": "1-2句项目目标",
+    "owner_name": "项目负责人姓名（必须是方案中明确指定的人，否则留空）",
+    "members": [{{"name": "成员姓名", "role": "角色"}}],
+    "milestones": [{{"date": "YYYY-MM-DD", "title": "里程碑"}}]
+  }}
+]
+
+要求：
+1. 只识别明确表示"启动新工作"的部分。如果规划只是给现有项目分任务，返回空数组 []
+2. owner_name 必须是方案中明确点名的人（不要编造）
+3. 至少要有 name 和 description
+4. 如果不确定，宁可少识别"""
+
+    try:
+        proposals = await chat_json(prompt, use_strong=True)
+        if isinstance(proposals, dict):
+            proposals = proposals.get("projects") or proposals.get("items") or []
+        if not isinstance(proposals, list):
+            proposals = []
+    except Exception as e:
+        logger.warning(f"项目提取失败: {e}")
+        return {"created_project_ids": []}
+
+    if not proposals:
+        return {"created_project_ids": []}
+
+    proposals = proposals[:5]  # 单次最多5个
+
+    # 加载员工映射
+    name_to_emp = {}
+    async with async_session() as session:
+        r = await session.execute(select(Employee).where(Employee.is_active == True))
+        for emp in r.scalars().all():
+            name_to_emp[emp.name] = emp.id
+
+        # 30天内已存在同名项目的列表（去重保护）
+        cutoff = datetime.now() - timedelta(days=30)
+        existing_q = await session.execute(
+            select(Project.name).where(Project.created_at >= cutoff)
+        )
+        recent_names = {row[0] for row in existing_q.all()}
+
+        created_ids = []
+        for p in proposals:
+            name = (p.get("name") or "").strip()
+            description = (p.get("description") or "").strip()
+            owner_name = (p.get("owner_name") or "").strip()
+
+            if not name or not description:
+                logger.info(f"项目缺name/description跳过: {p}")
+                continue
+
+            if name in recent_names:
+                logger.info(f"30天内已有同名项目跳过: {name}")
+                continue
+
+            owner_id = None
+            if owner_name and owner_name in name_to_emp:
+                owner_id = name_to_emp[owner_name]
+            elif owner_name:
+                logger.info(f"项目owner '{owner_name}' 在员工库中找不到，置空")
+
+            # 创建项目
+            proj = Project(
+                name=name,
+                description=description,
+                owner_id=owner_id,
+                status="planning",
+                milestones=p.get("milestones") or [],
+                timeline_events=[
+                    {
+                        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "event": f"[规划Agent自动创建] {plan[:800]}",
+                        "author": "规划Agent",
+                    }
+                ],
+            )
+            session.add(proj)
+            await session.flush()  # 拿到proj.id
+
+            # 加成员
+            for m in (p.get("members") or []):
+                m_name = (m.get("name") or "").strip()
+                m_role = (m.get("role") or "").strip()
+                if m_name in name_to_emp:
+                    session.add(
+                        ProjectMember(
+                            project_id=proj.id,
+                            employee_id=name_to_emp[m_name],
+                            role=m_role,
+                            responsibilities="",
+                        )
+                    )
+
+            created_ids.append(str(proj.id))
+            logger.info(f"自动创建项目: {name} (owner={owner_name or '空'}) → {proj.id}")
+
+        if created_ids:
+            await session.commit()
+
+    # 把创建结果追加到result
+    if created_ids:
+        suffix = f"\n\n📋 已自动创建 {len(created_ids)} 个项目，请到「项目进程」页查看。"
+    else:
+        suffix = ""
+
+    return {
+        "created_project_ids": created_ids,
+        "result": (state.get("result", "") + suffix),
+    }
+
+
+def _split_plan_and_tasks(raw: str) -> tuple[str, list[dict]]:
+    """
+    切分 LLM 一次性输出的 markdown方案 + JSON任务清单。
+
+    分隔符: ===TASKS_JSON===
+    返回: (plan_markdown, tasks_list)
+
+    若分隔符缺失或JSON解析失败，仍返回完整原文+空任务列表（避免崩溃）。
+    """
+    import json
+    import re
+
+    if not raw:
+        return "", []
+
+    sep = "===TASKS_JSON==="
+    if sep not in raw:
+        return raw.strip(), []
+
+    plan_part, json_part = raw.split(sep, 1)
+    plan = plan_part.strip()
+
+    # 清理 JSON 部分：去 markdown 代码块、找数组首尾
+    js = json_part.strip()
+    if js.startswith("```"):
+        # 去掉首行 ```json 和末行 ```
+        lines = js.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        js = "\n".join(lines)
+
+    # 截取 [ 到最后一个 ]
+    start = js.find("[")
+    end = js.rfind("]")
+    if start == -1 or end == -1:
+        return plan, []
+
+    js_arr = js[start : end + 1]
+
+    try:
+        tasks = json.loads(js_arr)
+        if isinstance(tasks, list):
+            return plan, tasks
+    except Exception:
+        pass
+
+    return plan, []
+
+
 async def _extract_structured_tasks(plan_text: str) -> list[dict]:
-    """从方案文本中提取结构化任务列表"""
+    """从方案文本中提取结构化任务列表（旧版兜底，已不在主路径用）"""
     from app.services.llm import chat_json
 
     prompt = f"""从以下方案中提取任务列表，返回JSON数组。
@@ -254,11 +488,13 @@ async def build_task_graph():
     graph.add_node("retrieve_context", retrieve_context)
     graph.add_node("draft_plan", draft_plan)
     graph.add_node("execute_dispatch", execute_dispatch)
+    graph.add_node("detect_and_create_projects", detect_and_create_projects)
 
     graph.add_edge(START, "retrieve_context")
     graph.add_edge("retrieve_context", "draft_plan")
     graph.add_edge("draft_plan", "execute_dispatch")
-    graph.add_edge("execute_dispatch", END)
+    graph.add_edge("execute_dispatch", "detect_and_create_projects")
+    graph.add_edge("detect_and_create_projects", END)
 
     checkpointer = await get_checkpointer_async()
     return graph.compile(
@@ -289,6 +525,7 @@ async def run_task_decomposition(
         "chat_id": chat_id,
         "approval_status": "pending",
         "created_task_ids": [],
+        "created_project_ids": [],
         "result": "",
     }
 
@@ -324,8 +561,9 @@ async def revise_task_plan(thread_id: str, feedback: str) -> dict:
     # 添加CEO反馈到历史
     history.append({"role": "user", "content": feedback})
 
-    system = """你是CEO的首席参谋。CEO对之前的方案提出了修改意见。
-请根据反馈修订方案，保持格式：项目背景、任务分解表、时间线、风险。"""
+    from app.agents.prompts import planner_revise_prompt
+    employee_list = await _load_employee_names_str()
+    system = planner_revise_prompt(employee_list=employee_list)
 
     messages = [{"role": "system", "content": system}]
     if rag_context:
@@ -333,10 +571,10 @@ async def revise_task_plan(thread_id: str, feedback: str) -> dict:
     for msg in history:
         messages.append(msg)
 
-    revised = await chat(messages, use_strong=True, max_tokens=4096)
+    raw = await chat(messages, use_strong=True, max_tokens=4096)
+    revised, tasks = _split_plan_and_tasks(raw)
 
     history.append({"role": "assistant", "content": revised})
-    tasks = await _extract_structured_tasks(revised)
 
     # 更新checkpoint状态
     await graph.aupdate_state(config, {

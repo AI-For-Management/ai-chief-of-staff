@@ -144,22 +144,41 @@ async def _compute_metrics() -> dict:
 
 
 async def _save_hr_summary_to_kb(date_str: str, summaries: list):
-    """把每日HR摘要存入知识库"""
+    """把每日HR摘要存入知识库 — 用 LLM 生成人才分析师视角的摘要"""
     import hashlib
     from app.services.rag import upsert_document
+    from app.services.llm import chat_simple
+    from app.agents.prompts import hr_summary_prompt
 
-    content = f"# 团队工作摘要 {date_str}\n\n"
-    content += f"在职人员: {len(summaries)}人\n\n"
-    content += "## 各员工今日表现\n\n"
-
+    # 数据先组织成结构化文本
     sorted_summaries = sorted(summaries, key=lambda x: x["contribution"], reverse=True)
-    for s in sorted_summaries:
-        content += (f"- **{s['name']}** ({s['department']}): "
-                    f"完成 {s['completed']}/{s['assigned']} 任务, "
-                    f"贡献分 {s['contribution']:.1f}, 负荷 {s['workload']:.0f}\n")
-
     avg_contribution = sum(s["contribution"] for s in summaries) / len(summaries)
-    content += f"\n**团队平均贡献分**: {avg_contribution:.1f}\n"
+
+    raw_data = f"日期: {date_str}\n在职人员: {len(summaries)}人\n平均贡献分: {avg_contribution:.1f}\n\n"
+    raw_data += "员工数据:\n"
+    for s in sorted_summaries:
+        raw_data += (
+            f"- {s['name']}（{s['department']}）: "
+            f"完成 {s['completed']}/{s['assigned']} 任务, "
+            f"贡献分 {s['contribution']:.1f}, 负荷 {s['workload']:.0f}\n"
+        )
+
+    # LLM 生成有温度的摘要
+    try:
+        ai_summary = await chat_simple(
+            f"基于以下原始数据，生成今日团队效能摘要：\n\n{raw_data}",
+            system_prompt=hr_summary_prompt(),
+            use_strong=False,
+        )
+    except Exception as e:
+        logger.warning(f"HR LLM 摘要失败，回退原始数据: {e}")
+        ai_summary = ""
+
+    # 最终内容 = LLM摘要 + 原始数据（双轨保留，便于追溯）
+    if ai_summary:
+        content = f"# 团队工作摘要 {date_str}\n\n{ai_summary}\n\n---\n## 原始数据\n{raw_data}"
+    else:
+        content = f"# 团队工作摘要 {date_str}\n\n{raw_data}"
 
     await upsert_document(
         doc_token=f"hr-summary-{date_str}",

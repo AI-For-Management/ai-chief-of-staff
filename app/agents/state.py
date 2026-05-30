@@ -35,6 +35,7 @@ class TaskState(TypedDict):
     chat_id: str
     approval_status: str  # pending | approved | rejected
     created_task_ids: list[str]
+    created_project_ids: list[str]  # 自动创建的项目ID（C阶段）
     result: str
 
 

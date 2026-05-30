@@ -69,16 +69,114 @@ async def _handle_card_action(body: dict) -> dict:
 
 
 async def _handle_message_event(body: dict) -> dict:
-    """处理收到的消息事件"""
+    """处理收到的消息事件（员工私聊机器人 / 询问回复）"""
     event = body.get("event", {})
+    header = body.get("header", {})
+    event_id = header.get("event_id", "")
     message = event.get("message", {})
+    sender = event.get("sender", {}) or {}
+
     msg_type = message.get("message_type", "")
+    chat_type = message.get("chat_type", "")
     chat_id = message.get("chat_id", "")
+    parent_id = message.get("parent_id", "") or message.get("root_id", "")
 
-    if msg_type == "text":
+    sender_id_obj = sender.get("sender_id", {}) or {}
+    open_id = sender_id_obj.get("open_id", "")
+
+    # 只处理私聊文本，群消息忽略
+    if chat_type != "p2p" or msg_type != "text":
+        return {"code": 0, "msg": "ok"}
+
+    # 去重：用 Redis SETNX
+    if event_id:
+        try:
+            from redis.asyncio import Redis
+            from app.config import get_settings
+            r = Redis.from_url(get_settings().REDIS_URL)
+            ok = await r.set(f"feishu:event:{event_id}", "1", ex=60, nx=True)
+            await r.aclose()
+            if not ok:
+                logger.info(f"重复事件忽略: {event_id}")
+                return {"code": 0, "msg": "ok"}
+        except Exception as e:
+            logger.debug(f"事件去重检查失败（继续处理）: {e}")
+
+    # 提取文本内容
+    try:
         content = json.loads(message.get("content", "{}"))
-        text = content.get("text", "")
-        logger.info(f"收到消息: chat_id={chat_id}, text={text[:50]}")
-        # Phase 3+ 实现时这里会路由到Agent处理
+        text = content.get("text", "") or ""
+    except Exception:
+        text = ""
 
+    if not text or not open_id:
+        return {"code": 0, "msg": "ok"}
+
+    logger.info(f"私聊消息: open_id={open_id[:12]}.., text={text[:60]}")
+
+    # 异步处理（不阻塞 webhook 返回，避免飞书 3 秒超时）
+    import asyncio
+    asyncio.create_task(_process_dm_async(open_id, text, parent_id))
+
+    # 立即 ACK
     return {"code": 0, "msg": "ok"}
+
+
+async def _process_dm_async(open_id: str, text: str, parent_id: str = ""):
+    """后台处理 DM：先尝试匹配询问回复，否则走员工对话Agent"""
+    try:
+        # 1. 查员工身份
+        from sqlalchemy import select
+        from app.database import async_session
+        from app.models import Employee
+
+        async with async_session() as session:
+            r = await session.execute(
+                select(Employee).where(Employee.feishu_open_id == open_id)
+            )
+            emp = r.scalar_one_or_none()
+
+        if not emp:
+            from app.services.feishu.messages import send_text
+            await send_text(
+                receive_id=open_id, receive_id_type="open_id",
+                text="未识别身份，请联系管理员把你的飞书账号绑定到员工库。",
+            )
+            return
+
+        # 2. 是否是询问回复？
+        from app.agents.employee_inquiry_graph import process_employee_reply
+        reply_result = await process_employee_reply(open_id, text, parent_id)
+
+        from app.services.feishu.messages import send_text
+
+        if reply_result.get("matched"):
+            ack = (
+                f"✅ 已记录到「{reply_result['project_name']}」时间轴。\n"
+                f"进展: {reply_result.get('progress','-')}\n"
+            )
+            if reply_result.get("blockers"):
+                ack += f"阻碍: {reply_result['blockers']}"
+            await send_text(receive_id=open_id, receive_id_type="open_id", text=ack)
+            return
+
+        # 3. 否则走员工对话Agent
+        from app.agents.employee_chat_graph import chat_about_employee
+        result = await chat_about_employee(
+            employee_id=str(emp.id),
+            message=text,
+            thread_id=f"dm-{emp.id}",
+        )
+        reply = result.get("reply", "我理解你的问题，但暂时无法回答。")
+        await send_text(receive_id=open_id, receive_id_type="open_id", text=reply)
+
+    except Exception as e:
+        logger.error(f"DM处理失败: {e}", exc_info=True)
+        try:
+            from app.services.feishu.messages import send_text
+            await send_text(
+                receive_id=open_id, receive_id_type="open_id",
+                text=f"处理失败：{e}",
+            )
+        except Exception:
+            pass

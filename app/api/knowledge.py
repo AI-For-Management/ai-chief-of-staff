@@ -72,13 +72,32 @@ async def upload_document(
 
 @router.get("/documents")
 async def list_documents(category: str = "", limit: int = 50):
-    """列出知识库中所有文档（可按分类筛选）"""
-    from sqlalchemy import select, desc
+    """列出知识库中所有文档（每个 doc_token 只返回最新版本）"""
+    from sqlalchemy import select, desc, func
     from app.database import async_session
     from app.models.document_version import DocumentVersion
 
     async with async_session() as session:
-        stmt = select(DocumentVersion).order_by(desc(DocumentVersion.last_updated)).limit(limit)
+        # 子查询：每个 doc_token 的最大 version
+        latest_versions_subq = (
+            select(
+                DocumentVersion.doc_token,
+                func.max(DocumentVersion.version).label("max_version"),
+            )
+            .group_by(DocumentVersion.doc_token)
+            .subquery()
+        )
+        # 主查询：连接子查询，只取最新版
+        stmt = (
+            select(DocumentVersion)
+            .join(
+                latest_versions_subq,
+                (DocumentVersion.doc_token == latest_versions_subq.c.doc_token)
+                & (DocumentVersion.version == latest_versions_subq.c.max_version),
+            )
+            .order_by(desc(DocumentVersion.last_updated))
+            .limit(limit)
+        )
         result = await session.execute(stmt)
         docs = result.scalars().all()
 

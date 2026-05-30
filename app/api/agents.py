@@ -57,13 +57,16 @@ class RAGAnswerRequest(BaseModel):
     query: str
     top_k: int = 8
     threshold: float = 0.4
+    use_strong: bool = False  # 默认快模型；复杂综合问题可设True
 
 
 @router.post("/rag/answer")
 async def rag_answer(req: RAGAnswerRequest):
     """RAG综合回答 — KB管理员基于知识库相关文档生成回答"""
     from app.agents.kb_manager_graph import answer_question
-    result = await answer_question(req.query, top_k=req.top_k, threshold=req.threshold)
+    result = await answer_question(
+        req.query, top_k=req.top_k, threshold=req.threshold, use_strong=req.use_strong
+    )
     return result
 
 
@@ -144,9 +147,93 @@ async def approve_action(thread_id: str, action: str = "approve"):
     """
     审批Agent操作（HITL恢复）
     action: approve | reject
+
+    异步模式：批准后立即返回 thread_id，前端用 /tasks/status?thread_id=xxx 轮询结果
     """
     logger.info(f"审批操作: thread_id={thread_id}, action={action}")
     from app.agents.task_graph import resume_task_dispatch
     approved = action == "approve"
-    result = await resume_task_dispatch(thread_id, approved)
-    return result
+
+    # 拒绝直接同步（很快）
+    if not approved:
+        result = await resume_task_dispatch(thread_id, False)
+        return result
+
+    # 批准 → 异步执行（写Bitable + 建表 + 派任务 + 创建项目，可能很慢）
+    import asyncio
+    from app.database import async_session
+    from app.models import AgentSession
+    from sqlalchemy import select
+
+    # 在 agent_sessions 中标记为 running
+    async with async_session() as session:
+        r = await session.execute(
+            select(AgentSession).where(AgentSession.thread_id == thread_id)
+        )
+        sess = r.scalar_one_or_none()
+        if sess:
+            sess.status = "running"
+        else:
+            sess = AgentSession(
+                thread_id=thread_id,
+                agent_type="task",
+                status="running",
+                user_input="approve",
+            )
+            session.add(sess)
+        await session.commit()
+
+    async def _run_dispatch_bg():
+        try:
+            res = await resume_task_dispatch(thread_id, True)
+            async with async_session() as session:
+                r = await session.execute(
+                    select(AgentSession).where(AgentSession.thread_id == thread_id)
+                )
+                sess = r.scalar_one_or_none()
+                if sess:
+                    sess.status = "completed"
+                    sess.result_summary = res.get("result", "")[:2000]
+                    await session.commit()
+        except Exception as e:
+            logger.error(f"后台派发失败 {thread_id}: {e}", exc_info=True)
+            async with async_session() as session:
+                r = await session.execute(
+                    select(AgentSession).where(AgentSession.thread_id == thread_id)
+                )
+                sess = r.scalar_one_or_none()
+                if sess:
+                    sess.status = "failed"
+                    sess.result_summary = f"错误: {e}"[:2000]
+                    await session.commit()
+
+    asyncio.create_task(_run_dispatch_bg())
+
+    return {
+        "thread_id": thread_id,
+        "status": "running",
+        "result": "已开始执行派发流程（写Bitable + 创建飞书任务 + 自动建项目），完成后会显示结果。请稍候 1-2 分钟。",
+    }
+
+
+@router.get("/tasks/status")
+async def task_status(thread_id: str):
+    """轮询任务执行状态"""
+    from sqlalchemy import select
+    from app.database import async_session
+    from app.models import AgentSession
+
+    async with async_session() as session:
+        r = await session.execute(
+            select(AgentSession).where(AgentSession.thread_id == thread_id)
+        )
+        sess = r.scalar_one_or_none()
+
+    if not sess:
+        return {"thread_id": thread_id, "status": "unknown"}
+
+    return {
+        "thread_id": thread_id,
+        "status": sess.status,
+        "result": sess.result_summary or "",
+    }

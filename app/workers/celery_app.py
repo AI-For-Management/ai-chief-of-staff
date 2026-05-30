@@ -15,6 +15,7 @@ celery_app = Celery(
         "app.workers.alert_tasks",
         "app.workers.hr_tasks",
         "app.workers.kb_tasks",
+        "app.workers.inquiry_tasks",
     ],
 )
 
@@ -55,5 +56,10 @@ celery_app.conf.beat_schedule = {
     "kb-manage": {
         "task": "app.workers.kb_tasks.run_kb_manage",
         "schedule": crontab(hour=3, minute=0),
+    },
+    # 员工询问: 周二/周五早9:00 飞书私聊问员工进展
+    "employee-inquiry": {
+        "task": "app.workers.inquiry_tasks.run_employee_inquiry",
+        "schedule": crontab(day_of_week="tue,fri", hour=9, minute=0),
     },
 }

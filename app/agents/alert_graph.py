@@ -149,9 +149,10 @@ async def generate_report(state: AlertState) -> dict:
 3. 每个风险点给出建议行动
 4. Markdown格式，CEO能快速扫读"""
 
+    from app.agents.prompts import alert_prompt
     report = await chat_simple(
         prompt,
-        system_prompt="你是项目管理专家，擅长识别项目风险并给出可执行建议。输出简洁有力。",
+        system_prompt=alert_prompt(),
         use_strong=True,
     )
 
@@ -191,6 +192,110 @@ async def push_alert(state: AlertState) -> dict:
         return {"sent": False}
 
 
+async def update_project_timelines(state: AlertState) -> dict:
+    """把风险信号通过模糊匹配写入对应项目的 timeline_events（D阶段新节点）。"""
+    from datetime import datetime
+    from sqlalchemy import select
+    from app.database import async_session
+    from app.models import Project
+    from app.services.llm import chat_json
+
+    overdue = state.get("overdue_items", []) or []
+    risks = state.get("risk_keywords_found", []) or []
+    if not (overdue or risks):
+        return {}
+
+    # 准备风险信号清单
+    signals = []
+    for o in overdue[:15]:
+        signals.append({
+            "type": "overdue",
+            "summary": f"逾期任务 [{o.get('task','?')}] 负责人:{o.get('assignee','?')} 截止:{o.get('deadline','?')} 状态:{o.get('status','?')}",
+        })
+    for r in risks[:15]:
+        signals.append({
+            "type": "sentiment",
+            "summary": f"群聊风险词 [{r.get('keyword','?')}] 上下文:{r.get('snippet','')[:80]}",
+        })
+
+    if not signals:
+        return {}
+
+    # 加载在进项目
+    projects_info = []
+    async with async_session() as session:
+        r = await session.execute(
+            select(Project).where(Project.status == "in_progress")
+        )
+        all_projs = r.scalars().all()
+        for p in all_projs:
+            projects_info.append({"id": str(p.id), "name": p.name, "description": p.description[:200]})
+
+    if not projects_info:
+        return {}
+
+    # LLM 模糊匹配
+    prompt = f"""为每条风险信号判断是否与某个进行中项目相关。
+
+进行中的项目:
+{chr(10).join(f"[{i}] {p['name']}: {p['description']}" for i, p in enumerate(projects_info))}
+
+风险信号:
+{chr(10).join(f"[{i}] {s['summary']}" for i, s in enumerate(signals))}
+
+返回JSON数组，每条对应一个风险信号:
+[{{"signal_index": 0, "project_index": 1, "confidence": 0.85}}, ...]
+
+要求:
+- project_index 用 -1 表示与所有项目都无关
+- confidence 0-1，<0.4 也用 -1
+- 只列有匹配的（置信度>=0.4）"""
+
+    try:
+        matches = await chat_json(prompt, use_strong=False)
+        if isinstance(matches, dict):
+            matches = matches.get("matches") or matches.get("items") or []
+    except Exception as e:
+        logger.warning(f"风险-项目模糊匹配失败: {e}")
+        return {}
+
+    if not isinstance(matches, list) or not matches:
+        return {}
+
+    # 写 timeline_events
+    update_count = 0
+    async with async_session() as session:
+        for m in matches:
+            try:
+                si = int(m.get("signal_index", -1))
+                pi = int(m.get("project_index", -1))
+                conf = float(m.get("confidence", 0))
+                if si < 0 or si >= len(signals) or pi < 0 or pi >= len(projects_info) or conf < 0.4:
+                    continue
+
+                proj_id = projects_info[pi]["id"]
+                proj = await session.get(Project, proj_id)
+                if not proj:
+                    continue
+
+                events = list(proj.timeline_events or [])
+                events.append({
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "event": f"[预警·模糊匹配·{conf:.0%}] {signals[si]['summary']}",
+                    "author": "预警Agent",
+                })
+                proj.timeline_events = events
+                update_count += 1
+            except Exception as e:
+                logger.warning(f"写入 project timeline 失败: {e}")
+
+        if update_count > 0:
+            await session.commit()
+
+    logger.info(f"预警Agent 写入项目 timeline {update_count} 条")
+    return {}
+
+
 async def save_to_kb(state: AlertState) -> dict:
     """把风险报告存入知识库"""
     from datetime import datetime
@@ -221,13 +326,15 @@ async def build_alert_graph():
     graph.add_node("scan_overdue", scan_overdue)
     graph.add_node("analyze_sentiment", analyze_sentiment)
     graph.add_node("generate_report", generate_report)
+    graph.add_node("update_project_timelines", update_project_timelines)
     graph.add_node("push_alert", push_alert)
     graph.add_node("save_to_kb", save_to_kb)
 
     graph.add_edge(START, "scan_overdue")
     graph.add_edge("scan_overdue", "analyze_sentiment")
     graph.add_edge("analyze_sentiment", "generate_report")
-    graph.add_edge("generate_report", "push_alert")
+    graph.add_edge("generate_report", "update_project_timelines")
+    graph.add_edge("update_project_timelines", "push_alert")
     graph.add_edge("push_alert", "save_to_kb")
     graph.add_edge("save_to_kb", END)
 

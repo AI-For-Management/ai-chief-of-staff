@@ -10,6 +10,16 @@ from app.agents import get_checkpointer_async
 logger = logging.getLogger(__name__)
 
 
+def _kb_condense_sysprompt() -> str:
+    from app.agents.prompts import kb_condense_prompt
+    return kb_condense_prompt()
+
+
+def _kb_answer_sysprompt() -> str:
+    from app.agents.prompts import kb_answer_prompt
+    return kb_answer_prompt()
+
+
 class KBState(TypedDict):
     duplicates: list  # [{"doc_a": "...", "doc_b": "...", "similarity": 0.92}]
     categorized_count: int
@@ -208,7 +218,7 @@ async def condense_for_embedding(title: str, content: str) -> str:
 
 文档内容：
 {content[:4000]}""",
-            system_prompt="你是知识库管理员，擅长把长文档压缩为精华版用于检索，绝不丢失任何关键实体和决策点。",
+            system_prompt=_kb_condense_sysprompt(),
             use_strong=False,
         )
         # 安全保险：超过 1000 字也截断
@@ -222,7 +232,12 @@ async def condense_for_embedding(title: str, content: str) -> str:
 # RAG 问答：基于知识库相关文档综合回答
 # ===========================================================
 
-async def answer_question(query: str, top_k: int = 8, threshold: float = 0.4) -> dict:
+async def answer_question(
+    query: str,
+    top_k: int = 8,
+    threshold: float = 0.4,
+    use_strong: bool = False,
+) -> dict:
     """
     基于知识库的相关文档（相关度 >= threshold）综合回答。
 
@@ -244,6 +259,15 @@ async def answer_question(query: str, top_k: int = 8, threshold: float = 0.4) ->
     # 1. 检索
     raw_results = await search(query, top_k=top_k)
     relevant = [r for r in raw_results if (1 - r["distance"]) >= threshold]
+
+    # Fallback: 如果固定阈值过滤后结果太少，按相对排序+top_k_min兜底
+    # 适用于"宽泛元问题"场景（如"公司最近发生了什么"），向量绝对相似度低但相对排序仍有意义
+    MIN_DOCS = 5
+    if len(relevant) < MIN_DOCS and raw_results:
+        # 按相关度排序，取前 MIN_DOCS 个，但相关度必须高于 0.15（避免完全无关的）
+        sorted_results = sorted(raw_results, key=lambda r: r["distance"])
+        relevant = [r for r in sorted_results[:MIN_DOCS] if (1 - r["distance"]) >= 0.15]
+        logger.info(f"RAG fallback: 相关度阈值 {threshold} 过滤后只剩 {len([r for r in raw_results if (1 - r['distance']) >= threshold])}，启用 top-{MIN_DOCS} 兜底（实际 {len(relevant)} 条）")
 
     if not relevant:
         return {
@@ -288,8 +312,8 @@ async def answer_question(query: str, top_k: int = 8, threshold: float = 0.4) ->
     try:
         answer = await chat_simple(
             prompt,
-            system_prompt="你是公司 AI 知识库助手。回答必须基于给定文档，绝不幻觉。",
-            use_strong=True,
+            system_prompt=_kb_answer_sysprompt(),
+            use_strong=use_strong,
         )
     except Exception as e:
         logger.error(f"RAG 综合回答失败: {e}")

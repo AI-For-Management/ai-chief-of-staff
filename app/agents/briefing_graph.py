@@ -25,8 +25,8 @@ async def crawl_news(state: BriefingState) -> dict:
 
 async def summarize(state: BriefingState) -> dict:
     """用LLM生成结构化简报，结合公司项目现状评估影响"""
-    from datetime import datetime
     from app.services.llm import chat_simple
+    from app.agents.prompts import briefing_prompt
 
     raw_news = state["raw_news"]
 
@@ -41,38 +41,42 @@ async def summarize(state: BriefingState) -> dict:
     if not news_text.strip():
         return {"briefing_content": "今日未抓取到相关新闻。"}
 
-    # 加载公司当前项目作为上下文
+    # 加载公司项目作为上下文
     company_context = await _load_company_context()
-    today = datetime.now().strftime("%Y年%m月%d日")
-    weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][datetime.now().weekday()]
+    active_projects = await _list_active_project_names()
 
-    prompt = f"""【今天日期】{today} {weekday}
-
-【公司当前业务】
+    user_prompt = f"""【公司当前业务现状】
 {company_context}
 
-【新闻素材】
+【今日抓取的新闻素材】
 {news_text}
 
-请基于以上信息，生成 CEO 每日情报简报。
-
-**硬性要求**:
-1. 简报开头**必须**写上今天日期：{today}（不要用其他日期）
-2. 每个话题下，至少要有 1 条 **直接点名** 公司项目的影响分析（例如"对智能客服Bot v2.0的影响："），把项目名嵌入分析中，而不是泛泛而谈
-3. CEO决策建议部分，**必须围绕公司当前业务**写（提及具体项目或业务），不要写通用建议
-4. 用 Markdown 格式：## 一级标题 / **加粗关键点**"""
+请生成今日情报简报。"""
 
     briefing = await chat_simple(
-        prompt,
-        system_prompt=(
-            "你是资深商业情报分析师，为'星辰科技'CEO服务。"
-            "你的简报必须紧密结合公司项目和业务现状，避免泛泛而谈。"
-            "今天是 " + today + "，所有日期都以这个为准。"
-        ),
+        user_prompt,
+        system_prompt=briefing_prompt(active_projects=active_projects),
         use_strong=True,
     )
 
     return {"briefing_content": briefing}
+
+
+async def _list_active_project_names() -> str:
+    """返回进行中项目的逗号分隔列表，用于注入 prompt"""
+    from sqlalchemy import select
+    from app.database import async_session
+    from app.models import Project
+
+    try:
+        async with async_session() as session:
+            result = await session.execute(
+                select(Project.name).where(Project.status == "in_progress").limit(10)
+            )
+            names = [row[0] for row in result.all()]
+        return "、".join(names) if names else "（暂无进行中项目）"
+    except Exception:
+        return "（暂无进行中项目）"
 
 
 async def _load_company_context() -> str:

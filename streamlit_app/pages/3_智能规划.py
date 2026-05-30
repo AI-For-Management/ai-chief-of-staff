@@ -92,22 +92,54 @@ with chat_col:
         st.rerun()
 
     if approve and st.session_state.plan_thread_id:
-        with st.spinner("正在派发任务..."):
+        with st.spinner("提交派发任务..."):
             try:
+                # 异步提交（立即返回）
                 resp = requests.post(
                     f"{API_BASE}/api/agents/approve",
                     params={"thread_id": st.session_state.plan_thread_id, "action": "approve"},
-                    timeout=300,
+                    timeout=10,
                 )
                 data = resp.json()
                 st.session_state.plan_messages.append({
                     "role": "assistant",
-                    "content": f"已批准派发。{data.get('result', '')}",
+                    "content": f"已开始派发（thread_id={st.session_state.plan_thread_id}）。\n\n"
+                               f"{data.get('result', '')}\n\n"
+                               f"⏳ 完成后此处会显示结果。可以等约 1-2 分钟后**点击下方「刷新结果」按钮**查看。",
                 })
-                st.session_state.plan_status = "idle"
+                st.session_state.plan_status = "running"  # 进入轮询模式
             except Exception as e:
-                st.error(f"操作失败：{e}")
+                st.error(f"提交失败：{e}")
         st.rerun()
+
+    # 派发执行中：提供刷新按钮拉取最终结果
+    if st.session_state.plan_status == "running" and st.session_state.plan_thread_id:
+        if st.button("🔄 刷新派发结果", use_container_width=True,
+                       help="后台异步执行中，点这个查询是否完成"):
+            try:
+                r = requests.get(
+                    f"{API_BASE}/api/agents/tasks/status",
+                    params={"thread_id": st.session_state.plan_thread_id},
+                    timeout=15,
+                )
+                d = r.json()
+                if d.get("status") == "completed":
+                    st.session_state.plan_messages.append({
+                        "role": "assistant",
+                        "content": f"✅ 派发完成：\n\n{d.get('result', '')}",
+                    })
+                    st.session_state.plan_status = "idle"
+                elif d.get("status") == "failed":
+                    st.session_state.plan_messages.append({
+                        "role": "assistant",
+                        "content": f"❌ 派发失败：{d.get('result', '')}",
+                    })
+                    st.session_state.plan_status = "idle"
+                else:
+                    st.info(f"还在执行中... 状态: {d.get('status', 'unknown')}。请稍后再点击。")
+            except Exception as e:
+                st.error(f"查询失败：{e}")
+            st.rerun()
 
     if reset:
         st.session_state.plan_messages = []

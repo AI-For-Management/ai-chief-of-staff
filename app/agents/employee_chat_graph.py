@@ -123,19 +123,12 @@ async def load_context(state: EmpChatState) -> dict:
 async def respond(state: EmpChatState) -> dict:
     """LLM 基于员工上下文 + 历史对话回答"""
     from app.services.llm import chat
+    from app.agents.prompts import employee_chat_prompt
 
-    system = f"""你是CEO的员工分析助手。CEO当前正在询问关于员工 **{state['employee_name']}** 的问题。
-
-【已加载的员工档案】
-{state['employee_context']}
-
-回答要求:
-1. 客观、有数据支撑（引用画像/指标/项目数据）
-2. 如建议派任务，结合该员工的优势/负荷给出理由
-3. 如用户问到其他员工对比（如"他和X谁更合适"），基于已加载的档案做客观对比
-4. 对涉及隐私的问题保持中立和建设性
-5. 简洁有力，3-5句话即可
-"""
+    system = employee_chat_prompt(
+        employee_name=state["employee_name"],
+        employee_context=state["employee_context"],
+    )
 
     messages = [{"role": "system", "content": system}]
     for msg in state.get("conversation_history", []):

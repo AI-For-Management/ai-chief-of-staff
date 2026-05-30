@@ -168,9 +168,10 @@ async def generate_briefing(topics: list[str]) -> str:
 新闻素材：
 {news_text}"""
 
+    from app.agents.prompts import briefing_prompt
     briefing = await chat_simple(
         prompt,
-        system_prompt="你是一位资深的商业情报分析师，擅长从零散新闻中提炼战略洞察。输出要简洁、有数据支撑、有决策价值。",
+        system_prompt=briefing_prompt(),
         use_strong=True,
     )
 
