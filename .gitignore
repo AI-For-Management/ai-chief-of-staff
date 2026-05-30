@@ -61,3 +61,11 @@ desktop.ini
 
 # Claude Code
 .claude/
+
+# Installer build outputs（启动器/配置器编译产物 + Setup.exe）
+installer/bin/
+installer/payload/
+installer/dist/
+launcher/AI首席参谋.exe
+configurator/configurator.exe
+*.ico-bak
